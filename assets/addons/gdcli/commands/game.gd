@@ -1,7 +1,8 @@
 extends RefCounted
 
-# game.* reads what the EditorDebuggerPlugin captured from running games.
-# Read-only: sending commands into the game needs a runtime autoload (M4).
+# game.* reads what the EditorDebuggerPlugin captured from running games, and
+# (M4) forwards commands to the `GdcliRuntime` autoload inside the game over the
+# live debugger session.
 
 const M = preload("meta.gd")
 
@@ -15,6 +16,27 @@ static func register(reg: Dictionary) -> void:
 		return _logs(args, opts)
 	reg["game.clear"] = func(_args: Dictionary, opts: Dictionary) -> Dictionary:
 		return _clear(opts)
+	reg["game.ping"] = func(_args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _remote("game.ping", {}, opts)
+	reg["game.tree"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _remote("game.tree", args, opts)
+	reg["game.get"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _remote("game.get", args, opts)
+	reg["game.set"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		# `game.set` mutates the running game, so a CLI dry run has to be
+		# validated in the game too; the flag rides along inside the args.
+		if bool(opts.get("dry_run", false)):
+			args = args.duplicate()
+			args["dry_run"] = true
+		return _remote("game.set", args, opts)
+	reg["game.eval"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _remote("game.eval", args, opts)
+
+
+# The reply arrives later; plugin.gd owns the correlation id, the 3 s timeout
+# and the NO_GAME error, so the editor main thread never blocks.
+static func _remote(cmd: String, args: Dictionary, opts: Dictionary) -> Dictionary:
+	return opts["plugin"].game_request(cmd, args)
 
 
 static func _capture(opts: Dictionary) -> RefCounted:

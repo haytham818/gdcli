@@ -67,6 +67,10 @@ pub const FILES: &[Asset] = &[
         path: "addons/gdcli/commands/game.gd",
         content: include_str!("../assets/addons/gdcli/commands/game.gd"),
     },
+    Asset {
+        path: "addons/gdcli/runtime/gdcli_runtime.gd",
+        content: include_str!("../assets/addons/gdcli/runtime/gdcli_runtime.gd"),
+    },
 ];
 
 const PLUGIN_CFG: &str = include_str!("../assets/addons/gdcli/plugin.cfg");
@@ -113,6 +117,7 @@ mod tests {
         assert!(paths.contains(&"addons/gdcli/debug_capture.gd"));
         assert!(paths.contains(&"addons/gdcli/commands/game.gd"));
         assert!(paths.contains(&"addons/gdcli/commands/node.gd"));
+        assert!(paths.contains(&"addons/gdcli/runtime/gdcli_runtime.gd"));
         for path in [
             "addons/gdcli/commands/signal.gd",
             "addons/gdcli/commands/group.gd",

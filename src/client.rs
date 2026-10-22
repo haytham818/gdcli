@@ -100,6 +100,8 @@ pub struct Client {
     reader: BufReader<TcpStream>,
     ping: Ping,
     next_id: u64,
+    /// The read timeout in force; `call_with_timeout` overrides it per request.
+    read_timeout: Duration,
 }
 
 impl Client {
@@ -125,6 +127,7 @@ impl Client {
             reader: BufReader::new(stream),
             ping: Ping::default(),
             next_id: 0,
+            read_timeout: READ_TIMEOUT,
         };
         let ping = client.handshake(&endpoint)?;
         client.ping = ping;
@@ -138,14 +141,44 @@ impl Client {
 
     /// Sends a command, after checking that the plugin advertises it.
     pub fn call(&mut self, cmd: &str, args: &Value, opts: Option<Opts>) -> Result<Value> {
-        if !self.ping.capabilities.iter().any(|known| known == cmd) {
-            return Err(Error::protocol(format!(
+        self.check_capability(cmd)?;
+        self.call_raw(cmd, args, opts)
+    }
+
+    /// Sends a command with a one-off read timeout (probing commands such as
+    /// `game.ping` must not wait for the default two minutes).
+    pub fn call_with_timeout(
+        &mut self,
+        cmd: &str,
+        args: &Value,
+        opts: Option<Opts>,
+        timeout: Duration,
+    ) -> Result<Value> {
+        self.check_capability(cmd)?;
+        let previous = self.read_timeout;
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| Error::not_connected(format!("cannot set a read timeout: {error}")))?;
+        self.read_timeout = timeout;
+
+        let result = self.call_raw(cmd, args, opts);
+
+        self.read_timeout = previous;
+        let _ = self.reader.get_ref().set_read_timeout(Some(previous));
+        result
+    }
+
+    fn check_capability(&self, cmd: &str) -> Result<()> {
+        if self.ping.capabilities.iter().any(|known| known == cmd) {
+            Ok(())
+        } else {
+            Err(Error::protocol(format!(
                 "plugin v{} does not implement {cmd}",
                 self.ping.plugin_version
             ))
-            .with_hint("run `gdcli plugin upgrade`"));
+            .with_hint("run `gdcli plugin upgrade`"))
         }
-        self.call_raw(cmd, args, opts)
     }
 
     /// Sends a command without consulting the capability list (`raw`, `batch`).
@@ -301,7 +334,7 @@ impl Client {
             {
                 Err(Error::not_connected(format!(
                     "timed out waiting for the editor after {} s",
-                    READ_TIMEOUT.as_secs()
+                    self.read_timeout.as_secs()
                 )))
             }
             Err(error) if error.kind() == io::ErrorKind::InvalidData => Err(Error::protocol(

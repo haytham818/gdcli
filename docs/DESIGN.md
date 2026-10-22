@@ -67,9 +67,9 @@ Not possible, and therefore not exposed:
 3. **Gizmo drags and viewport picking.** Set transforms as properties instead.
 4. **Editing a non-current open scene.** `get_open_scene_roots()` reads them; writing means
    switching the active scene, which is visible to the user.
-5. **Sending commands to the running game.** `EditorDebuggerSession.send_message` works,
-   but the game needs an `EngineDebugger` capture registered — that is a runtime autoload,
-   tracked as M4 (`gdcli runtime install`).
+5. **Sending commands to the running game** needs a project-side autoload. Implemented in M4
+   as an opt-in (`gdcli runtime install`): the editor sends `gdcli:req`, `GdcliRuntime`
+   answers `gdcli:res`. Without it every `game.*` call is `NO_GAME`.
 6. **Reading a local game's stdout.** On 4.7.2 the debugger only carries `game_view:*`
    messages; the game's `print()` goes to the editor console, so `game.logs` stays empty
    unless a runtime autoload forwards it. Measured with `_capture` instrumented.
@@ -97,7 +97,15 @@ the user's history as `gdcli: <cmd>`.
   returns `NO_API`, `xvfb-run -a -s "-screen 0 1600x1000x24" godot --editor ...` produces
   real 1844x1189 sub-viewport and 2560x1398 whole-window PNGs. Game *output* is not
   observable on 4.7 (see below).
-* **M4** — optional runtime autoload for game-side writes.
+* **M4** (shipped, plugin 0.5.0) — `runtime install/uninstall/status` and `game
+  ping/tree/get/set/eval` over an `EngineDebugger` capture in the running game, with id
+  correlation and a 3 s timeout in the editor. Opt-in: the autoload is a project file.
+
+  Tooling note for GUI tests: run the editor with `WAYLAND_DISPLAY` unset and
+  `--display-driver x11` under `xvfb-run`. With `WAYLAND_DISPLAY` inherited, the editor runs
+  on the real Wayland session and the game it spawns (`--display-driver wayland --wid ...`)
+  never initialises its scene tree, so the runtime autoload never runs and every `game.*`
+  call times out.
 
 ## Conventions
 

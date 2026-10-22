@@ -228,7 +228,10 @@ if [[ "${E2E_GUI:-0}" == "1" ]]; then
 	rm -rf "$GW"; mkdir -p "$GW"
 	cp "$REPO"/tests/fixture/project.godot "$REPO"/tests/fixture/*.tscn "$REPO"/tests/fixture/*.gd "$GW"/
 	"$BIN" plugin install --project "$GW" >/dev/null
-	xvfb-run -a -s "-screen 0 1600x1000x24" "$GODOT" --editor --path "$GW" res://main.tscn >"$GW/editor.log" 2>&1 &
+	# Force X11: with WAYLAND_DISPLAY inherited the editor runs on the real session and the
+	# game it spawns (--display-driver wayland --wid ...) never initialises its scene tree.
+	env -u WAYLAND_DISPLAY xvfb-run -a -s "-screen 0 1600x1000x24" \
+		"$GODOT" --editor --display-driver x11 --path "$GW" res://main.tscn >"$GW/editor.log" 2>&1 &
 	GUI_PID=$!
 	trap 'kill "$EDITOR_PID" "$GUI_PID" 2>/dev/null || true; pkill -f "$GW" 2>/dev/null || true' EXIT
 	for _ in $(seq 1 120); do
@@ -249,10 +252,28 @@ for name in ("shot2d.png", "shot3d.png", "whole.png"):
     assert w > 100 and h > 100, (name, w, h)
     print("    %s %dx%d ok" % (name, w, h))
 PY
+	step "M4 GUI: runtime bridge"
+	"$BIN" runtime install --project "$GW" | sed 's/^/    /'
+	"$BIN" runtime install --project "$GW" | sed 's/^/    /'
 	"$BIN" editor play --wait --project "$GW" | sed 's/^/    /'
 	sleep 4
+	"$BIN" game ping --project "$GW" | sed 's/^/    /'
+	"$BIN" game tree --depth 2 --project "$GW" | sed 's/^/    /'
+	"$BIN" game get Inst/Label text --project "$GW" | sed 's/^/    /'
+	"$BIN" game set Inst/Label text '"patched"' --project "$GW" | sed 's/^/    /'
+	GOT="$("$BIN" game get Inst/Label text --quiet --project "$GW")"
+	[[ "$GOT" == *patched* ]] || fail "game set did not take effect in the running game (got '$GOT')"
+	EVAL="$("$BIN" game eval '1 + 1' --quiet --project "$GW")"
+	[[ "$EVAL" == "2" ]] || fail "game eval returned '$EVAL'"
 	"$BIN" game logs --limit 10 --project "$GW" | sed 's/^/    /'
 	"$BIN" editor stop --project "$GW" | sed 's/^/    /'
+
+	set +e
+	"$BIN" game ping --project "$GW" >/dev/null 2>&1
+	CODE=$?
+	set -e
+	[[ $CODE -eq 3 ]] || fail "game ping with no game should exit 3, got $CODE"
+	"$BIN" runtime uninstall --project "$GW" | sed 's/^/    /'
 fi
 
 echo

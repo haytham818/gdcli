@@ -1,20 +1,31 @@
 @tool
 extends EditorDebuggerPlugin
 
-# Collects what a running game prints so `game.logs` can report it. The editor
-# forwards debugger traffic here; this plugin never sends anything back.
+# Collects what a running game prints so `game.logs` can report it, and routes
+# the runtime bridge's replies to the editor plugin. The editor forwards debugger
+# traffic here; only the bridge replies are consumed.
 
 const MAX_ENTRIES := 500
 
+# Measured on 4.7.2: `_has_capture` is asked with the part before the first
+# colon ("gdcli" for a "gdcli:res" message), while `_capture` receives the full
+# message. Registering "gdcli" is therefore enough and stays narrow.
+const CAPTURES := ["output", "error", "stack_dump", "gdcli"]
+
 var _entries: Array = []
+# Set by plugin.gd; receives the game's `gdcli:res` replies for correlation.
+var bridge: Object = null
 
 
-# Only these prefixes are wanted; the editor keeps handling them itself.
 func _has_capture(prefix: String) -> bool:
-	return prefix == "output" or prefix == "error" or prefix == "stack_dump"
+	return CAPTURES.has(prefix)
 
 
 func _capture(message: String, data: Array, session_id: int) -> bool:
+	if message.begins_with("gdcli:"):
+		if bridge != null:
+			bridge.on_game_message(message, data, session_id)
+		return true
 	match message:
 		"output":
 			for item in data:

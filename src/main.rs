@@ -67,6 +67,11 @@ enum Command {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    /// Install and inspect the in-game runtime
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
     /// Editor state
     Editor {
         #[command(subcommand)]
@@ -145,6 +150,16 @@ enum PluginCommand {
     /// Rewrite the plugin files that differ from the embedded version
     Upgrade,
     /// Compare the embedded, installed, endpoint and live plugin versions
+    Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    /// Write the plugin files and register the GdcliRuntime autoload
+    Install,
+    /// Remove the GdcliRuntime autoload; the files stay in place
+    Uninstall,
+    /// Report installed files, autoload state and whether a game answers
     Status,
 }
 
@@ -562,6 +577,50 @@ enum GameCommand {
     },
     /// Clear the captured log
     Clear,
+    /// Ask the running game for its runtime, scene and frame rate
+    Ping,
+    /// Print the running game's live scene tree
+    Tree {
+        /// Maximum depth; 0 means unlimited
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        depth: u32,
+        /// Include every non-default property
+        #[arg(long)]
+        props: bool,
+    },
+    /// Read one property from the running game
+    Get {
+        /// Node address; "" is the game scene root
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Property name
+        #[arg(value_name = "PROP")]
+        prop: String,
+    },
+    /// Write one property in the running game
+    Set {
+        /// Node address; "" is the game scene root
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Property name
+        #[arg(value_name = "PROP")]
+        prop: String,
+        /// Value, parsed according to --as
+        #[arg(value_name = "VALUE")]
+        value: String,
+        /// How the game parses the value
+        #[arg(long = "as", value_enum, default_value = "gd", value_name = "MODE")]
+        r#as: GameValueAs,
+    },
+    /// Evaluate a GDScript expression inside the running game (unsafe)
+    Eval {
+        /// Expression to evaluate; arbitrary code runs in the game process
+        #[arg(value_name = "EXPR")]
+        expr: String,
+        /// Node address used as the expression's base instance
+        #[arg(long, value_name = "P")]
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -583,6 +642,28 @@ impl ValueAs {
             ValueAs::Json => "json",
             ValueAs::Ref => "ref",
             ValueAs::Expr => "expr",
+        }
+    }
+}
+
+/// `game set --as`: the same parsers as `prop set` minus `expr`, because code
+/// evaluation inside the game is the explicit `game eval` command.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum GameValueAs {
+    /// Godot literal, the inverse of var_to_str
+    Gd,
+    /// JSON, coerced to the property type
+    Json,
+    /// res:// path loaded as a Resource
+    Ref,
+}
+
+impl GameValueAs {
+    fn as_str(self) -> &'static str {
+        match self {
+            GameValueAs::Gd => "gd",
+            GameValueAs::Json => "json",
+            GameValueAs::Ref => "ref",
         }
     }
 }
@@ -695,11 +776,20 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
         return commands::plugin::run(cli.project.as_deref(), action, format);
     }
 
+    if let Command::Runtime { command } = &cli.command {
+        let action = match command {
+            RuntimeCommand::Install => commands::runtime::Action::Install,
+            RuntimeCommand::Uninstall => commands::runtime::Action::Uninstall,
+            RuntimeCommand::Status => commands::runtime::Action::Status,
+        };
+        return commands::runtime::run(cli.project.as_deref(), action, format);
+    }
+
     let project = client::discover_project(cli.project.as_deref())?;
 
     match &cli.command {
-        Command::Plugin { .. } => Err(Error::usage(
-            "internal: plugin commands are handled without a connection",
+        Command::Plugin { .. } | Command::Runtime { .. } => Err(Error::usage(
+            "internal: plugin and runtime commands are handled without a connection",
         )),
         Command::Batch => {
             let mut client = Client::connect(&project)?;
@@ -890,6 +980,16 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                 GameCommand::Status => commands::game::status(),
                 GameCommand::Logs { limit, clear } => commands::game::logs(*limit, *clear)?,
                 GameCommand::Clear => commands::game::clear(),
+                GameCommand::Ping => commands::game::ping(),
+                GameCommand::Tree { depth, props } => commands::game::tree(*depth, *props),
+                GameCommand::Get { path, prop } => commands::game::get(path, prop),
+                GameCommand::Set {
+                    path,
+                    prop,
+                    value,
+                    r#as,
+                } => commands::game::set(path, prop, value, r#as.as_str())?,
+                GameCommand::Eval { expr, path } => commands::game::eval(expr, path.as_deref()),
             };
             execute(&project, call, format, opts)
         }
@@ -1165,5 +1265,122 @@ mod tests {
                 command: GameCommand::Clear
             }
         ));
+    }
+
+    #[test]
+    fn runtime_commands_parse() {
+        for (args, expected) in [
+            (["gdcli", "runtime", "install"], "install"),
+            (["gdcli", "runtime", "uninstall"], "uninstall"),
+            (["gdcli", "runtime", "status"], "status"),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("parse runtime command");
+            let Command::Runtime { command } = cli.command else {
+                panic!("expected runtime command");
+            };
+            let actual = match command {
+                RuntimeCommand::Install => "install",
+                RuntimeCommand::Uninstall => "uninstall",
+                RuntimeCommand::Status => "status",
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn game_tree_defaults_to_unlimited_depth_without_props() {
+        let cli = Cli::try_parse_from(["gdcli", "game", "tree"]).expect("parse game tree");
+        let Command::Game {
+            command: GameCommand::Tree { depth, props },
+        } = cli.command
+        else {
+            panic!("expected game tree");
+        };
+        assert_eq!(depth, 0);
+        assert!(!props);
+
+        let cli = Cli::try_parse_from(["gdcli", "game", "tree", "--depth", "2", "--props"])
+            .expect("parse game tree");
+        let Command::Game {
+            command: GameCommand::Tree { depth, props },
+        } = cli.command
+        else {
+            panic!("expected game tree");
+        };
+        assert_eq!(depth, 2);
+        assert!(props);
+    }
+
+    #[test]
+    fn game_get_set_and_eval_parse_their_positionals() {
+        let cli = Cli::try_parse_from(["gdcli", "game", "get", "Hero", "position"])
+            .expect("parse game get");
+        let Command::Game {
+            command: GameCommand::Get { path, prop },
+        } = cli.command
+        else {
+            panic!("expected game get");
+        };
+        assert_eq!(path, "Hero");
+        assert_eq!(prop, "position");
+
+        let cli =
+            Cli::try_parse_from(["gdcli", "game", "set", "Hero", "position", "Vector2(1, 2)"])
+                .expect("parse game set");
+        let Command::Game {
+            command:
+                GameCommand::Set {
+                    path,
+                    prop,
+                    value,
+                    r#as,
+                },
+        } = cli.command
+        else {
+            panic!("expected game set");
+        };
+        assert_eq!(path, "Hero");
+        assert_eq!(prop, "position");
+        assert_eq!(value, "Vector2(1, 2)");
+        assert_eq!(r#as.as_str(), "gd");
+
+        let cli = Cli::try_parse_from(["gdcli", "game", "eval", "fps", "--path", "Hero"])
+            .expect("parse game eval");
+        let Command::Game {
+            command: GameCommand::Eval { expr, path },
+        } = cli.command
+        else {
+            panic!("expected game eval");
+        };
+        assert_eq!(expr, "fps");
+        assert_eq!(path.as_deref(), Some("Hero"));
+    }
+
+    #[test]
+    fn game_set_accepts_only_gd_json_and_ref() {
+        for mode in ["gd", "json", "ref"] {
+            let cli = Cli::try_parse_from([
+                "gdcli", "game", "set", "Hero", "position", "1", "--as", mode,
+            ])
+            .expect("parse game set mode");
+            assert!(matches!(
+                cli.command,
+                Command::Game {
+                    command: GameCommand::Set { .. }
+                }
+            ));
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "gdcli", "game", "set", "Hero", "position", "1", "--as", "expr",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn game_eval_rejects_an_as_mode() {
+        assert!(Cli::try_parse_from(["gdcli", "game", "eval", "fps", "--as", "gd"]).is_err());
     }
 }

@@ -197,6 +197,12 @@ static func _autoload_add(args: Dictionary, opts: Dictionary) -> Dictionary:
 	if not plugin.has_method("add_autoload_singleton"):
 		return M.err("NO_API", "this engine has no add_autoload_singleton()")
 	plugin.add_autoload_singleton(name, path)
+	# 4.7 registers the autoload as "*uid://..." and only the editor's uid cache can resolve
+	# it, so a game launched right after the change silently skips the autoload. The path form
+	# always resolves.
+	var key := "autoload/" + name
+	if str(ProjectSettings.get_setting(key, "")).contains("uid://"):
+		ProjectSettings.set_setting(key, "*" + path)
 	ProjectSettings.save()
 	if _find_autoload(name).is_empty():
 		return M.err("GODOT_ERROR", "add_autoload_singleton('%s') did not register it" % name)

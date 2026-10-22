@@ -4,6 +4,10 @@
 use serde_json::{Value, json};
 
 use crate::client::PROTOCOL;
+use crate::commands::runtime::{
+    AUTOLOAD_NAME, AUTOLOAD_PATH, AutoloadState, GameState, InstallState, RemoveState,
+    RuntimeStatus,
+};
 use crate::error::{Error, Result};
 use crate::install::{InstallReport, Outcome, PluginStatus};
 
@@ -25,7 +29,8 @@ pub fn render(fmt: Fmt, cmd: &str, args: &Value, data: &Value) -> Result<()> {
     }
 
     match cmd {
-        "scene.tree" => render_tree(data),
+        "scene.tree" | "game.tree" => render_tree(data),
+        "game.eval" => render_eval(data),
         "scene.roots" => render_scene_roots(data),
         "prop.list" => render_prop_list(data),
         "editor.undo" | "editor.redo" => render_history_action(cmd, data),
@@ -221,6 +226,178 @@ pub fn plugin_status(fmt: Fmt, status: &PluginStatus) {
     }
 }
 
+/// Renders `runtime install`: the plugin file report plus the autoload result.
+pub fn runtime_install_report(
+    fmt: Fmt,
+    report: &InstallReport,
+    state: InstallState,
+    error: Option<&str>,
+) {
+    if fmt.json {
+        let files: Vec<Value> = report
+            .files
+            .iter()
+            .map(|file| json!({"path": file.path, "status": file.outcome.as_str()}))
+            .collect();
+        let mut autoload = json!({
+            "name": AUTOLOAD_NAME,
+            "path": AUTOLOAD_PATH,
+            "state": state.as_str(),
+        });
+        if let Some(error) = error {
+            autoload["error"] = Value::String(error.to_string());
+        }
+        print_json(&json!({
+            "project": report.project,
+            "files": files,
+            "project_godot": {
+                "path": "project.godot",
+                "status": report.project_godot.as_str(),
+            },
+            "autoload": autoload,
+        }));
+        return;
+    }
+
+    if fmt.quiet {
+        for file in &report.files {
+            if file.outcome == Outcome::Wrote {
+                println!("{}", file.path);
+            }
+        }
+        if report.project_godot == Outcome::Wrote {
+            println!("project.godot");
+        }
+        println!("{}", state.as_str());
+        return;
+    }
+
+    for file in &report.files {
+        println!("{:<11} {}", file.outcome.verb(), file.path);
+    }
+    println!("{:<11} project.godot", report.project_godot.verb());
+    match state {
+        InstallState::Added => println!("{:<11} {AUTOLOAD_NAME} -> {AUTOLOAD_PATH}", "autoload"),
+        InstallState::AlreadyPresent => {
+            println!("{:<11} {AUTOLOAD_NAME} already present", "autoload")
+        }
+        InstallState::Unavailable => match error {
+            Some(error) => println!("{:<11} {AUTOLOAD_NAME} not added: {error}", "autoload"),
+            None => println!("{:<11} {AUTOLOAD_NAME} not added", "autoload"),
+        },
+    }
+
+    if report.changed() {
+        println!();
+        println!("restart the Godot editor to load the plugin");
+    }
+}
+
+/// Renders `runtime uninstall`; removing an absent autoload is success.
+pub fn runtime_uninstall_report(fmt: Fmt, state: RemoveState) {
+    if fmt.json {
+        print_json(&json!({
+            "name": AUTOLOAD_NAME,
+            "state": state.as_str(),
+        }));
+        return;
+    }
+    if fmt.quiet {
+        println!("{}", state.as_str());
+        return;
+    }
+    match state {
+        RemoveState::Removed => println!("removed autoload {AUTOLOAD_NAME}"),
+        RemoveState::Absent => println!("autoload {AUTOLOAD_NAME} was not present"),
+    }
+}
+
+/// Renders `runtime status`: files, autoload and live-game state in one view.
+pub fn runtime_status(fmt: Fmt, status: &RuntimeStatus) {
+    if fmt.json {
+        let autoload = match &status.autoload {
+            AutoloadState::Present { path, enabled } => json!({
+                "name": AUTOLOAD_NAME,
+                "state": "present",
+                "path": path,
+                "enabled": enabled,
+            }),
+            AutoloadState::Missing => json!({
+                "name": AUTOLOAD_NAME,
+                "state": "missing",
+            }),
+            AutoloadState::Unknown { error } => json!({
+                "name": AUTOLOAD_NAME,
+                "state": "unknown",
+                "error": error,
+            }),
+        };
+        let game = match &status.game {
+            GameState::Answering {
+                runtime,
+                scene,
+                fps,
+            } => json!({
+                "state": "answering",
+                "runtime": runtime,
+                "scene": scene,
+                "fps": fps,
+            }),
+            GameState::NoGame => json!({"state": "no-game"}),
+            GameState::Unknown { error } => json!({
+                "state": "unknown",
+                "error": error,
+            }),
+        };
+        print_json(&json!({
+            "project": status.project,
+            "files": {"installed": status.files_installed},
+            "autoload": autoload,
+            "game": game,
+        }));
+        return;
+    }
+
+    if fmt.quiet {
+        println!(
+            "{}",
+            if status.files_installed {
+                "installed"
+            } else {
+                "not-installed"
+            }
+        );
+        return;
+    }
+
+    println!("project: {}", status.project);
+    println!(
+        "files: {}",
+        if status.files_installed {
+            "installed"
+        } else {
+            "missing"
+        }
+    );
+    match &status.autoload {
+        AutoloadState::Present { path, enabled } => println!(
+            "autoload: present -> {path}{}",
+            if *enabled { "" } else { " (disabled)" }
+        ),
+        AutoloadState::Missing => println!("autoload: missing"),
+        AutoloadState::Unknown { error } => println!("autoload: unknown ({error})"),
+    }
+    match &status.game {
+        GameState::Answering {
+            runtime,
+            scene,
+            fps,
+        } => println!("game: running (runtime {runtime}, scene {scene}, fps {fps})"),
+        GameState::NoGame => println!("game: not running"),
+        GameState::Unknown { error } => println!("game: unknown ({error})"),
+    }
+}
+
 fn print_json(value: &Value) {
     match serde_json::to_string_pretty(value) {
         Ok(text) => println!("{text}"),
@@ -232,7 +409,7 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
     let lines: Vec<String> = match cmd {
         "scene.roots" => entries(data, "scenes", "path"),
         "prop.list" => entries(data, "props", "name"),
-        "scene.tree" => entries(data, "nodes", "path"),
+        "scene.tree" | "game.tree" => entries(data, "nodes", "path"),
         "editor.history" => entries(data, "actions", "name"),
         "editor.undo" | "editor.redo" => history_action_quiet(cmd, data),
         "meta.capabilities" => entries(data, "capabilities", ""),
@@ -249,6 +426,8 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
         "editor.toast" | "game.clear" => Vec::new(),
         "game.status" => scalar(data, "sessions").into_iter().collect(),
         "game.logs" => game_log_texts(data),
+        "game.ping" => scalar(data, "runtime").into_iter().collect(),
+        "game.get" | "game.set" | "game.eval" => scalar(data, "value_text").into_iter().collect(),
         "project.setting.get" => scalar(data, "value_text").into_iter().collect(),
         "project.autoload.list" => entries(data, "autoloads", "name"),
         "fs.scan" => scalar(data, "started").into_iter().collect(),
@@ -298,7 +477,7 @@ fn entries(data: &Value, key: &str, field: &str) -> Vec<String> {
 /// The one value a script wants: a path, a rendered property value, a project.
 fn primary_scalar(cmd: &str, data: &Value) -> Option<String> {
     let preferred = match cmd {
-        "prop.get" | "prop.set" => "value_text",
+        "prop.get" | "prop.set" | "game.get" | "game.set" | "game.eval" => "value_text",
         "editor.status" | "meta.ping" => "project",
         _ => "path",
     };
@@ -321,8 +500,16 @@ fn primary_scalar(cmd: &str, data: &Value) -> Option<String> {
 }
 
 fn render_tree(data: &Value) {
+    for line in tree_lines(data) {
+        println!("{line}");
+    }
+}
+
+/// `scene.tree` and `game.tree` share this flat pre-order shape; indentation
+/// comes from the number of separators in each node's path.
+fn tree_lines(data: &Value) -> Vec<String> {
     let Some(nodes) = data.get("nodes").and_then(Value::as_array) else {
-        return;
+        return Vec::new();
     };
     let root_path = nodes
         .first()
@@ -330,11 +517,12 @@ fn render_tree(data: &Value) {
         .and_then(Value::as_str)
         .unwrap_or("");
 
+    let mut lines = Vec::new();
     for node in nodes {
         let path = node.get("path").and_then(Value::as_str).unwrap_or("");
         let depth = if path == root_path {
             0
-        } else if root_path.is_empty() {
+        } else if root_path.is_empty() || root_path == "." {
             path.matches('/').count() + 1
         } else {
             path.matches('/').count()
@@ -353,14 +541,22 @@ fn render_tree(data: &Value) {
         if let Some(instance) = node.get("instance").and_then(Value::as_str) {
             line.push_str(&format!(" instance={instance}"));
         }
-        println!("{line}");
+        lines.push(line);
 
         if let Some(props) = node.get("props").and_then(Value::as_object) {
             let property_indent = "  ".repeat(depth + 1);
             for (key, value) in props {
-                println!("{property_indent}{key} = {}", cell(value));
+                lines.push(format!("{property_indent}{key} = {}", cell(value)));
             }
         }
+    }
+    lines
+}
+
+/// `game.eval` prints only the evaluated value; the type is visible in JSON.
+fn render_eval(data: &Value) {
+    if let Some(value) = data.get("value_text") {
+        println!("{}", cell(value));
     }
 }
 
@@ -795,6 +991,9 @@ fn preferred_keys(cmd: &str) -> &'static [&'static str] {
         "editor.play" => &["playing", "scene"],
         "editor.stop" => &["playing"],
         "game.status" => &["sessions", "active"],
+        "game.ping" => &["runtime", "scene", "fps"],
+        "game.get" | "game.set" => &["name", "type", "value_text"],
+        "game.eval" => &["type", "value_text"],
         "fs.status" => &["scanning", "progress", "importing"],
         "script.save_all" => &["saved"],
         _ => &["path", "type", "project", "name", "value_text"],
@@ -1019,6 +1218,52 @@ mod tests {
             })),
             vec!["no connections"]
         );
+    }
+
+    #[test]
+    fn game_tree_uses_the_scene_tree_renderer() {
+        let data = json!({
+            "scene": "res://main.tscn",
+            "nodes": [
+                {"path": ".", "name": "Main", "type": "Node2D"},
+                {"path": "Hero", "name": "Hero", "type": "Sprite2D",
+                 "props": {"position": "Vector2(1, 2)"}},
+                {"path": "Hero/Label", "name": "Label", "type": "Label"},
+            ],
+        });
+        assert_eq!(
+            tree_lines(&data),
+            vec![
+                "Main (Node2D)",
+                "  Hero (Sprite2D)",
+                "    position = Vector2(1, 2)",
+                "    Label (Label)",
+            ]
+        );
+    }
+
+    #[test]
+    fn game_get_renders_the_name_type_and_value() {
+        let data = json!({"name": "position", "type": "Vector2", "value_text": "Vector2(3, 4)"});
+        assert_eq!(
+            object_lines("game.get", &data),
+            vec![
+                "name      : position",
+                "type      : Vector2",
+                "value_text: Vector2(3, 4)",
+            ]
+        );
+    }
+
+    #[test]
+    fn game_set_renders_the_same_three_keys() {
+        let data = json!({"name": "position", "type": "Vector2", "value_text": "Vector2(3, 4)"});
+        let lines = object_lines("game.set", &data);
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("name      : position")
+        );
+        assert!(lines.contains(&"value_text: Vector2(3, 4)".to_string()));
     }
 
     #[test]

@@ -91,6 +91,7 @@ early with a useful message instead of sending an unknown command.
 | `NOT_FOUND` | node, resource or scene does not exist |
 | `NO_SCENE` | no edited scene is open |
 | `NO_API` | the engine version lacks the required API |
+| `NO_GAME` | no running game, or it has no `GdcliRuntime` autoload |
 | `GODOT_ERROR` | an engine call returned an error |
 | `INTERNAL` | unexpected failure; `message` carries the detail |
 
@@ -279,6 +280,10 @@ Property access on a `res://` file goes through `prop.*` (§5, §7). Not undoabl
 rewrites `project.godot` (formatting may change; this is the engine's writer, not ours).
 Autoloads use `EditorPlugin.add_autoload_singleton` / `remove_autoload_singleton`. Not undoable.
 
+`autoload.add` rewrites the stored value from 4.7's `*uid://...` to `*res://...` before saving:
+the editor only publishes a new uid to `.godot/uid_cache.bin` later, so a game launched right
+after the change cannot resolve the uid and silently skips the autoload.
+
 ### fs
 
 | cmd | args | data |
@@ -361,3 +366,45 @@ nothing". Getting real game output needs a runtime autoload or an owned stdout p
 
 Out of scope for M3: switching built-in bottom panels (no API; only panels owned by the
 plugin are addressable) and the remote scene tree.
+
+## 11. Commands (M4, plugin 0.5.0)
+
+M4 is opt-in: it needs the `GdcliRuntime` autoload inside the game, installed with
+`gdcli runtime install` (which writes `res://addons/gdcli/runtime/gdcli_runtime.gd` and adds
+the autoload through `EditorPlugin.add_autoload_singleton`). Without it every `game.*` request
+below answers `NO_GAME`.
+
+### game (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `game.ping` | — | `{"runtime":str,"scene":str,"fps":float}` |
+| `game.tree` | `{"depth":int=0,"props":bool=false}` | `{"scene","nodes":[node]}` |
+| `game.get` | `{"path","name"}` | `{"name","type","value_text"}` |
+| `game.set` | `{"path","name","value","as"?}` | `{"name","type","value_text"}` |
+| `game.eval` | `{"expr","path"?}` | `{"type","value_text"}` |
+
+`nodes` uses the same shape as `scene.tree` (§7). `depth: 0` is unlimited.
+
+### Transport
+
+The editor plugin owns correlation ids and forwards over the live debugger session:
+
+```
+editor → game   session.send_message("gdcli:req", [id, cmd, args])
+game → editor   EngineDebugger.send_message("gdcli:res", [id, ok, payload])
+```
+
+The runtime autoload registers `EngineDebugger.register_message_capture("gdcli", cb)` in
+`_ready` and answers on the game's main thread. A request with no reply within **3 s** fails
+with `NO_GAME` ("no reply from the running game"). Requests are serialized; the plugin keeps
+the pending reply in its deferred mechanism (the same one used by `scene.open`), so the
+editor main thread never blocks.
+
+`game.set` reuses the §6 value modes inside the game (`gd`, `json`, `ref`); `expr` is
+editor-side only and meaningless here. `game.eval` parses with `Expression`, executes with the
+node at `path` as base instance (or no base), and returns `var_to_str(result)`. It runs
+arbitrary code inside the game and is documented as such — it is never implicit.
+
+The runtime must be inert when no debugger is attached (`EngineDebugger.is_active()` false)
+and must never print to stdout on its own.

@@ -6,9 +6,12 @@ extends EditorPlugin
 # editor down, because that takes the user's unsaved work with it.
 
 const PROTOCOL := 1
-const PLUGIN_VERSION := "0.4.0"
+const PLUGIN_VERSION := "0.5.0"
 const MAX_LINE := 1 << 20
 const OPEN_TIMEOUT_FRAMES := 120
+const GAME_TIMEOUT_MS := 3000
+
+const NO_GAME_HINT := "install the runtime with `gdcli runtime install`, then play the game"
 
 const ENDPOINT_DIR := "res://.godot/gdcli"
 const ENDPOINT_PATH := "res://.godot/gdcli/endpoint.json"
@@ -34,6 +37,10 @@ var _token: String = ""
 var debug_capture: EditorDebuggerPlugin = null
 # Each client: {"peer": StreamPeerTCP, "buf": PackedByteArray, "authed": bool, "pending": Dictionary}
 var _clients: Array = []
+# Runtime bridge correlation: one request at a time per client, keyed by id.
+var _game_seq: int = 0
+var _game_awaiting: Dictionary = {}
+var _game_replies: Dictionary = {}
 
 
 func _enter_tree() -> void:
@@ -44,6 +51,7 @@ func _enter_tree() -> void:
 		module.register(_registry)
 	debug_capture = DebugCapture.new() as EditorDebuggerPlugin
 	add_debugger_plugin(debug_capture)
+	debug_capture.set("bridge", self)
 	_token = Crypto.new().generate_random_bytes(32).hex_encode()
 	_start_server()
 	_write_endpoint()
@@ -60,6 +68,8 @@ func _exit_tree() -> void:
 		if peer != null:
 			peer.disconnect_from_host()
 	_clients.clear()
+	_game_awaiting.clear()
+	_game_replies.clear()
 	if _server != null:
 		_server.stop()
 		_server = null
@@ -83,6 +93,7 @@ func _process(_delta: float) -> void:
 		})
 	for i in range(_clients.size() - 1, -1, -1):
 		if not _pump_client(_clients[i]):
+			_abandon_game_pending(_clients[i])
 			_clients.remove_at(i)
 
 
@@ -286,6 +297,8 @@ func _advance_pending(client: Dictionary) -> bool:
 			reply = EditorCommands.poll_screenshot(pending)
 		"play":
 			reply = EditorCommands.poll_play(pending)
+		"game":
+			reply = _poll_game(pending)
 		_:
 			reply = _poll_scene_open(pending)
 	if reply.is_empty():
@@ -306,6 +319,88 @@ func _poll_scene_open(pending: Dictionary) -> Dictionary:
 		return Meta.err("GODOT_ERROR", "timed out waiting for '%s' to open" % want,
 			"check that the scene loads without errors")
 	return {}
+
+
+# --- runtime bridge (M4) -----------------------------------------------------
+
+# Sends `gdcli:req` over the live debugger session and hands the request to the
+# deferred mechanism: the reply arrives asynchronously through `_capture`.
+# game.gd calls this; a dead/missing runtime answers NO_GAME after 3 s.
+func game_request(cmd: String, args: Dictionary) -> Dictionary:
+	var session := _game_session()
+	if session == null:
+		return Meta.err("NO_GAME", "no running game", NO_GAME_HINT)
+	_game_seq += 1
+	var key := str(_game_seq)
+	_game_awaiting[key] = true
+	session.send_message("gdcli:req", [_game_seq, cmd, args])
+	# `id` belongs to the client request and is overwritten by _dispatch, so the
+	# correlation key travels under its own name.
+	return {"__pending": {
+		"kind": "game",
+		"game_id": key,
+		"cmd": cmd,
+		"deadline": Time.get_ticks_msec() + GAME_TIMEOUT_MS,
+	}}
+
+
+func _game_session() -> EditorDebuggerSession:
+	if debug_capture == null:
+		return null
+	for candidate in debug_capture.get_sessions():
+		if candidate != null and candidate.is_active():
+			return candidate
+	return null
+
+
+# Called by debug_capture.gd for every `gdcli:` message from the game.
+func on_game_message(message: String, data: Array, _session_id: int) -> void:
+	if message != "gdcli:res" or data.size() < 3:
+		return
+	var key := str(data[0])
+	if not _game_awaiting.has(key):
+		# Late reply for a timed-out request: drop it.
+		return
+	_game_awaiting.erase(key)
+	_game_replies[key] = {"ok": bool(data[1]), "payload": data[2]}
+
+
+# Called by _advance_pending(); {} keeps waiting, anything else is the reply.
+func _poll_game(pending: Dictionary) -> Dictionary:
+	var key := String(pending["game_id"])
+	if _game_replies.has(key):
+		var reply: Dictionary = _game_replies[key]
+		_game_replies.erase(key)
+		var payload: Variant = reply["payload"]
+		if bool(reply["ok"]):
+			if typeof(payload) != TYPE_DICTIONARY:
+				return Meta.err("INTERNAL", "the game sent a malformed reply")
+			return Meta.ok(payload)
+		if typeof(payload) == TYPE_DICTIONARY and payload.has("code") and payload.has("message"):
+			var error := {
+				"code": String(payload["code"]),
+				"message": String(payload["message"]),
+			}
+			if payload.has("hint") and String(payload["hint"]) != "":
+				error["hint"] = String(payload["hint"])
+			return {"ok": false, "error": error}
+		return Meta.err("INTERNAL", "the game sent a malformed error")
+	if Time.get_ticks_msec() >= int(pending["deadline"]):
+		_game_awaiting.erase(key)
+		return Meta.err("NO_GAME", "no reply from the running game", NO_GAME_HINT)
+	return {}
+
+
+# The client went away before its reply did; forget the correlation id so a
+# late answer is not stored forever.
+func _abandon_game_pending(client: Dictionary) -> void:
+	var pending: Variant = client.get("pending", {})
+	if typeof(pending) != TYPE_DICTIONARY or pending.is_empty():
+		return
+	if String(pending.get("kind", "")) == "game":
+		var key := String(pending["game_id"])
+		_game_awaiting.erase(key)
+		_game_replies.erase(key)
 
 
 # --- wire helpers ------------------------------------------------------------
