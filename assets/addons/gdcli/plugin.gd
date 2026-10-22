@@ -6,12 +6,15 @@ extends EditorPlugin
 # editor down, because that takes the user's unsaved work with it.
 
 const PROTOCOL := 1
-const PLUGIN_VERSION := "0.6.0"
 const MAX_LINE := 1 << 20
 const OPEN_TIMEOUT_FRAMES := 120
 const GAME_TIMEOUT_MS := 3000
 
 const NO_GAME_HINT := "install the runtime with `gdcli runtime install`, then play the game"
+
+## Single source of truth for the version: plugin.cfg next to this script. Cargo.toml carries
+## the same string and `src/assets.rs` fails the build when they drift.
+var _version := "unknown"
 
 const ENDPOINT_DIR := "res://.godot/gdcli"
 const ENDPOINT_PATH := "res://.godot/gdcli/endpoint.json"
@@ -43,7 +46,18 @@ var _game_awaiting: Dictionary = {}
 var _game_replies: Dictionary = {}
 
 
+func _read_plugin_version() -> String:
+	var script := get_script() as Script
+	if script == null:
+		return "unknown"
+	var cfg := ConfigFile.new()
+	if cfg.load(script.resource_path.get_base_dir().path_join("plugin.cfg")) != OK:
+		return "unknown"
+	return str(cfg.get_value("plugin", "version", "unknown"))
+
+
 func _enter_tree() -> void:
+	_version = _read_plugin_version()
 	_registry = {}
 	for module in [Meta, EditorCommands, SceneCommands, NodeCommands, PropCommands,
 			SignalCommands, GroupCommands, ResCommands, ProjectCommands, FsCommands,
@@ -106,7 +120,7 @@ func capabilities() -> Array:
 func ping_data() -> Dictionary:
 	return {
 		"protocol": PROTOCOL,
-		"plugin_version": PLUGIN_VERSION,
+		"plugin_version": _version,
 		"godot": String(Engine.get_version_info()["string"]),
 		"project": ProjectSettings.globalize_path("res://"),
 		"capabilities": capabilities(),
@@ -147,7 +161,7 @@ func _write_endpoint() -> void:
 		return
 	file.store_string(JSON.stringify({
 		"protocol": PROTOCOL,
-		"plugin_version": PLUGIN_VERSION,
+		"plugin_version": _version,
 		"port": _port,
 		"token": _token,
 		"pid": OS.get_process_id(),

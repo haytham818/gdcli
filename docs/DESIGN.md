@@ -116,3 +116,9 @@ the user's history as `gdcli: <cmd>`.
 * The plugin never blocks the main thread; slow work returns an `op` id.
 * The plugin must survive bad input: validate arguments, return `BAD_ARGS`, never crash the
   editor, because a plugin crash takes the user's unsaved work with it.
+* **One version string**, `assets/addons/gdcli/plugin.cfg`. `Cargo.toml` must carry the same
+  value and `src/assets.rs` fails the build if it does not; `plugin.gd` and the runtime read it
+  from that file at runtime instead of declaring a constant, and `scripts/e2e.sh` asserts
+  CLI == installed plugin.cfg == live plugin == runtime version.
+* An exported game does not ship `plugin.cfg`, so `game.ping.runtime` reports `unknown` there.
+  The bridge only matters when the game runs from the editor, so that is acceptable.

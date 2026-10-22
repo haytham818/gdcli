@@ -101,6 +101,26 @@ mod tests {
     }
 
     #[test]
+    fn embedded_version_matches_the_crate_version() {
+        assert_eq!(
+            embedded_version().as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "assets/addons/gdcli/plugin.cfg must carry the same version as Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn plugin_sources_do_not_hardcode_a_version() {
+        for asset in FILES {
+            assert!(
+                !asset.content.contains("VERSION := \""),
+                "{} hardcodes a version; read it from plugin.cfg instead",
+                asset.path
+            );
+        }
+    }
+
+    #[test]
     fn ignores_keys_that_only_start_with_version() {
         assert_eq!(plugin_version("versioned=\"9\"\n"), None);
         assert_eq!(

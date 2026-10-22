@@ -27,6 +27,12 @@ step "plugin install"
 "$BIN" plugin install --project "$WORK" | sed 's/^/    /'
 grep -q 'res://addons/gdcli/plugin.cfg' "$WORK/project.godot" || fail "project.godot not patched"
 
+step "version consistency"
+CLI_V="$("$BIN" --version | awk '{print $2}')"
+CFG_V="$(sed -n 's/^version="\(.*\)"$/\1/p' "$WORK/addons/gdcli/plugin.cfg")"
+[[ "$CLI_V" == "$CFG_V" ]] || fail "cli $CLI_V != installed plugin.cfg $CFG_V"
+echo "    cli == plugin.cfg: $CLI_V"
+
 step "start editor"
 rm -f "$WORK/.godot/gdcli/endpoint.json"
 "$GODOT" --headless --editor --path "$WORK" res://main.tscn >"$WORK/editor.log" 2>&1 &
@@ -51,6 +57,11 @@ assert by["Inst"]["instance"] == "res://sub.tscn", by["Inst"]
 assert by["."]["children"] == 1, by["."]
 print("    tree ok:", [n["path"] for n in nodes])
 PY
+
+step "version consistency (live)"
+PING_V="$("$BIN" raw meta.ping --project "$WORK" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["plugin_version"])')"
+[[ "$PING_V" == "$CLI_V" ]] || fail "live plugin $PING_V != cli $CLI_V"
+echo "    cli == live plugin: $PING_V"
 
 step "mutations"
 "$BIN" node add Sprite2D --name Hero --project "$WORK" | sed 's/^/    /'
@@ -290,6 +301,9 @@ PY
 	"$BIN" editor play --wait --project "$GW" | sed 's/^/    /'
 	sleep 4
 	"$BIN" game ping --project "$GW" | sed 's/^/    /'
+	RT_V="$("$BIN" game ping --project "$GW" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["runtime"])')"
+	[[ "$RT_V" == "$CLI_V" ]] || fail "runtime $RT_V != cli $CLI_V"
+	echo "    cli == runtime: $RT_V"
 	"$BIN" game tree --depth 2 --project "$GW" | sed 's/^/    /'
 	"$BIN" game get Inst/Label text --project "$GW" | sed 's/^/    /'
 	"$BIN" game set Inst/Label text '"patched"' --project "$GW" | sed 's/^/    /'

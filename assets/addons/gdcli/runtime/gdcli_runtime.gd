@@ -12,7 +12,6 @@ extends Node
 # the node never registers, never prints and never answers.
 
 const CAPTURE := "gdcli"
-const RUNTIME_VERSION := "0.6.0"
 
 # A fresh game still has an empty viewport texture; the same two-frame wait the
 # editor screenshots use (PROTOCOL section 10) applies here.
@@ -27,11 +26,14 @@ const DENY_PROPS := [
 	"resource_local_to_scene",
 ]
 
+## Read from plugin.cfg (two directories up) so nothing hardcodes a second version.
+var _version := "unknown"
 var _registered := false
 var _class_props: Dictionary = {}
 
 
 func _ready() -> void:
+	_version = _read_plugin_version()
 	if not EngineDebugger.is_active():
 		return
 	var capture_name := StringName(CAPTURE)
@@ -96,10 +98,21 @@ func _reply(id: Variant, ok: bool, payload: Variant) -> void:
 
 # --- commands ----------------------------------------------------------------
 
+func _read_plugin_version() -> String:
+	var script := get_script() as Script
+	if script == null:
+		return "unknown"
+	var cfg := ConfigFile.new()
+	var path := script.resource_path.get_base_dir().get_base_dir().path_join("plugin.cfg")
+	if cfg.load(path) != OK:
+		return "unknown"
+	return str(cfg.get_value("plugin", "version", "unknown"))
+
+
 func _ping() -> Dictionary:
 	var root := _root()
 	return _ok({
-		"runtime": RUNTIME_VERSION,
+		"runtime": _version,
 		"scene": _scene_path(root),
 		"fps": float(Engine.get_frames_per_second()),
 	})
