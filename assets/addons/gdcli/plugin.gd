@@ -1,0 +1,297 @@
+@tool
+extends EditorPlugin
+
+# gdcli editor bridge: NDJSON over a loopback TCP socket, executed on the editor
+# main thread. See docs/PROTOCOL.md. A malformed request must never take the
+# editor down, because that takes the user's unsaved work with it.
+
+const PROTOCOL := 1
+const PLUGIN_VERSION := "0.1.0"
+const MAX_LINE := 1 << 20
+const OPEN_TIMEOUT_FRAMES := 120
+
+const ENDPOINT_DIR := "res://.godot/gdcli"
+const ENDPOINT_PATH := "res://.godot/gdcli/endpoint.json"
+
+const Meta = preload("commands/meta.gd")
+const EditorCommands = preload("commands/editor.gd")
+const SceneCommands = preload("commands/scene.gd")
+const NodeCommands = preload("commands/node.gd")
+const PropCommands = preload("commands/prop.gd")
+
+var _registry: Dictionary = {}
+var _server: TCPServer = null
+var _port: int = 0
+var _token: String = ""
+# Each client: {"peer": StreamPeerTCP, "buf": PackedByteArray, "authed": bool, "pending": Dictionary}
+var _clients: Array = []
+
+
+func _enter_tree() -> void:
+	_registry = {}
+	for module in [Meta, EditorCommands, SceneCommands, NodeCommands, PropCommands]:
+		module.register(_registry)
+	_token = Crypto.new().generate_random_bytes(32).hex_encode()
+	_start_server()
+	_write_endpoint()
+	set_process(true)
+
+
+func _exit_tree() -> void:
+	set_process(false)
+	for client in _clients:
+		var peer: StreamPeerTCP = client["peer"]
+		if peer != null:
+			peer.disconnect_from_host()
+	_clients.clear()
+	if _server != null:
+		_server.stop()
+		_server = null
+	if FileAccess.file_exists(ENDPOINT_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(ENDPOINT_PATH))
+
+
+func _process(_delta: float) -> void:
+	if _server == null:
+		return
+	while _server.is_connection_available():
+		var peer := _server.take_connection()
+		if peer == null:
+			break
+		peer.set_no_delay(true)
+		_clients.append({
+			"peer": peer,
+			"buf": PackedByteArray(),
+			"authed": false,
+			"pending": {},
+		})
+	for i in range(_clients.size() - 1, -1, -1):
+		if not _pump_client(_clients[i]):
+			_clients.remove_at(i)
+
+
+func capabilities() -> Array:
+	var names := _registry.keys()
+	names.sort()
+	return names
+
+
+func ping_data() -> Dictionary:
+	return {
+		"protocol": PROTOCOL,
+		"plugin_version": PLUGIN_VERSION,
+		"godot": String(Engine.get_version_info()["string"]),
+		"project": ProjectSettings.globalize_path("res://"),
+		"capabilities": capabilities(),
+	}
+
+
+# --- server lifecycle --------------------------------------------------------
+
+func _start_server() -> void:
+	var base := randi_range(40000, 49960)
+	for attempt in range(20):
+		var port := base + attempt
+		if port > 50000:
+			port = 40000 + (port - 50000) - 1
+		var server := TCPServer.new()
+		if server.listen(port, "127.0.0.1") == OK:
+			_server = server
+			_port = port
+			return
+		server.stop()
+	push_warning("gdcli: no free loopback port in 40000..50000; bridge disabled")
+	_server = null
+	_port = 0
+
+
+func _write_endpoint() -> void:
+	if _port == 0:
+		return
+	var absolute_dir := ProjectSettings.globalize_path(ENDPOINT_DIR)
+	var error := DirAccess.make_dir_recursive_absolute(absolute_dir)
+	if error != OK and error != ERR_ALREADY_EXISTS:
+		push_warning("gdcli: cannot create '%s': %s" % [absolute_dir, error_string(error)])
+		return
+	var file := FileAccess.open(ENDPOINT_PATH, FileAccess.WRITE)
+	if file == null:
+		push_warning("gdcli: cannot write '%s': %s"
+			% [ENDPOINT_PATH, error_string(FileAccess.get_open_error())])
+		return
+	file.store_string(JSON.stringify({
+		"protocol": PROTOCOL,
+		"plugin_version": PLUGIN_VERSION,
+		"port": _port,
+		"token": _token,
+		"pid": OS.get_process_id(),
+		"project": ProjectSettings.globalize_path("res://"),
+		"godot": String(Engine.get_version_info()["string"]),
+	}, "  "))
+	file.close()
+
+
+# --- socket loop -------------------------------------------------------------
+
+# Returns false when the client has to be dropped.
+func _pump_client(client: Dictionary) -> bool:
+	var peer: StreamPeerTCP = client["peer"]
+	peer.poll()
+	if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		return false
+
+	if not client["pending"].is_empty() and _advance_pending(client):
+		return true
+	if not client["pending"].is_empty():
+		# One in-flight request per connection: keep the rest buffered for later.
+		return true
+
+	var available := peer.get_available_bytes()
+	if available > 0:
+		var chunk := peer.get_partial_data(available)
+		if chunk[0] != OK:
+			return false
+		var buf: PackedByteArray = client["buf"]
+		buf.append_array(chunk[1])
+		client["buf"] = buf
+
+	var buf: PackedByteArray = client["buf"]
+	# Bytes, not text: a UTF-8 sequence may be split across reads, so only decode
+	# complete newline-terminated lines.
+	if buf.size() > MAX_LINE and buf.find(10) == -1:
+		_send(client, _error_reply(null, false, "BAD_ARGS", "request line exceeds 1 MiB"))
+		return false
+
+	while true:
+		var newline := buf.find(10)
+		if newline == -1:
+			break
+		if newline > MAX_LINE:
+			_send(client, _error_reply(null, false, "BAD_ARGS", "request line exceeds 1 MiB"))
+			return false
+		var line := buf.slice(0, newline).get_string_from_utf8()
+		buf = buf.slice(newline + 1)
+		client["buf"] = buf
+		if line.strip_edges() == "":
+			continue
+		if not _handle_line(client, line):
+			return false
+		if not client["pending"].is_empty():
+			break
+	client["buf"] = buf
+	return true
+
+
+func _handle_line(client: Dictionary, line: String) -> bool:
+	var json := JSON.new()
+	if json.parse(line) != OK:
+		_send(client, _error_reply(null, false, "BAD_ARGS",
+			"invalid JSON: %s" % json.get_error_message()))
+		return bool(client["authed"])
+	var payload: Variant = json.data
+	if typeof(payload) != TYPE_DICTIONARY:
+		_send(client, _error_reply(null, false, "BAD_ARGS", "request must be a JSON object"))
+		return bool(client["authed"])
+
+	if not bool(client["authed"]):
+		var token: Variant = payload.get("token", null)
+		if typeof(token) != TYPE_STRING or String(token) != _token:
+			# Wrong token: close without a reply.
+			var peer: StreamPeerTCP = client["peer"]
+			peer.disconnect_from_host()
+			return false
+		client["authed"] = true
+		_send(client, {"ok": true, "data": ping_data()})
+		return true
+
+	var has_id: bool = payload.has("id")
+	var id: Variant = payload.get("id", null)
+	var cmd: Variant = payload.get("cmd", null)
+	if typeof(cmd) != TYPE_STRING or String(cmd) == "":
+		_send(client, _error_reply(id, has_id, "BAD_ARGS", "missing `cmd`"))
+		return true
+
+	var args: Variant = payload.get("args", {})
+	if args == null:
+		args = {}
+	if typeof(args) != TYPE_DICTIONARY:
+		_send(client, _error_reply(id, has_id, "BAD_ARGS", "`args` must be an object"))
+		return true
+
+	var opts: Variant = payload.get("opts", {})
+	if opts == null:
+		opts = {}
+	if typeof(opts) != TYPE_DICTIONARY:
+		_send(client, _error_reply(id, has_id, "BAD_ARGS", "`opts` must be an object"))
+		return true
+
+	var reply := _dispatch(client, String(cmd), args, opts, id, has_id)
+	if not reply.is_empty():
+		_send(client, reply)
+	return true
+
+
+func _dispatch(client: Dictionary, cmd: String, args: Dictionary, opts: Dictionary,
+		id: Variant, has_id: bool) -> Dictionary:
+	if not _registry.has(cmd):
+		return _error_reply(id, has_id, "UNKNOWN_CMD", "unknown command '%s'" % cmd,
+			"run `gdcli raw meta.capabilities`")
+	if not opts.has("undo"):
+		opts["undo"] = true
+	if not opts.has("dry_run"):
+		opts["dry_run"] = false
+	opts["plugin"] = self
+
+	var result: Variant = _registry[cmd].call(args, opts)
+	if typeof(result) != TYPE_DICTIONARY:
+		return _error_reply(id, has_id, "INTERNAL",
+			"command '%s' returned an invalid result" % cmd)
+
+	if result.has("__pending"):
+		var pending: Dictionary = result["__pending"]
+		pending["id"] = id
+		pending["has_id"] = has_id
+		pending["frames"] = 0
+		client["pending"] = pending
+		return {}
+
+	return _reply(id, has_id, result)
+
+
+# open_scene_from_path() returns void, so scene.open defers its reply until the
+# edited root actually points at the requested scene.
+func _advance_pending(client: Dictionary) -> bool:
+	var pending: Dictionary = client["pending"]
+	pending["frames"] = int(pending["frames"]) + 1
+	var want := String(pending["path"])
+	var root := EditorInterface.get_edited_scene_root()
+	if root != null and ProjectSettings.localize_path(root.scene_file_path) == want:
+		_send(client, _reply(pending["id"], pending["has_id"], Meta.ok({"path": want})))
+		client["pending"] = {}
+		return true
+	if int(pending["frames"]) >= OPEN_TIMEOUT_FRAMES:
+		_send(client, _reply(pending["id"], pending["has_id"],
+			Meta.err("GODOT_ERROR", "timed out waiting for '%s' to open" % want,
+				"check that the scene loads without errors")))
+		client["pending"] = {}
+		return true
+	return false
+
+
+# --- wire helpers ------------------------------------------------------------
+
+func _send(client: Dictionary, reply: Dictionary) -> void:
+	var peer: StreamPeerTCP = client["peer"]
+	var line := JSON.stringify(reply, "", false, true) + "\n"
+	if peer.put_data(line.to_utf8_buffer()) != OK:
+		peer.disconnect_from_host()
+
+
+func _reply(id: Variant, has_id: bool, result: Dictionary) -> Dictionary:
+	if has_id:
+		result["id"] = id
+	return result
+
+
+func _error_reply(id: Variant, has_id: bool, code: String, message: String,
+		hint: String = "") -> Dictionary:
+	return _reply(id, has_id, Meta.err(code, message, hint))

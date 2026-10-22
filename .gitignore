@@ -1,0 +1,6 @@
+/target
+tests/fixture/.godot/
+tests/fixture/addons/
+tests/fixture/*.import
+__pycache__/
+*.pyc

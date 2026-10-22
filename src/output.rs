@@ -1,0 +1,463 @@
+//! Human, quiet and JSON rendering. Commands only produce `data`; everything
+//! the user sees is printed here.
+
+use serde_json::{Value, json};
+
+use crate::client::PROTOCOL;
+use crate::install::{InstallReport, Outcome, PluginStatus};
+
+#[derive(Debug, Clone, Copy)]
+pub struct Fmt {
+    pub json: bool,
+    pub quiet: bool,
+}
+
+/// Renders one protocol response.
+pub fn render(fmt: Fmt, cmd: &str, data: &Value) {
+    if fmt.json {
+        print_json(data);
+        return;
+    }
+    if fmt.quiet {
+        print_quiet(cmd, data);
+        return;
+    }
+
+    match cmd {
+        "scene.tree" => render_tree(data),
+        "scene.roots" => render_scene_roots(data),
+        "prop.list" => render_prop_list(data),
+        "meta.capabilities" => {
+            if let Some(capabilities) = data.get("capabilities").and_then(Value::as_array) {
+                for capability in capabilities {
+                    println!("{}", cell(capability));
+                }
+            }
+        }
+        _ => render_object(cmd, data),
+    }
+}
+
+/// Renders `plugin install` / `plugin upgrade`.
+pub fn install_report(fmt: Fmt, report: &InstallReport, check: bool) {
+    let changed = report.changed();
+
+    if fmt.json {
+        let files: Vec<Value> = report
+            .files
+            .iter()
+            .map(|file| json!({"path": file.path, "status": file.outcome.as_str()}))
+            .collect();
+        print_json(&json!({
+            "project": report.project,
+            "check": check,
+            "changed": changed,
+            "files": files,
+            "project_godot": {
+                "path": "project.godot",
+                "status": report.project_godot.as_str(),
+            },
+        }));
+        return;
+    }
+
+    if fmt.quiet {
+        for file in &report.files {
+            if file.outcome == Outcome::Wrote {
+                println!("{}", file.path);
+            }
+        }
+        if report.project_godot == Outcome::Wrote {
+            println!("project.godot");
+        }
+        return;
+    }
+
+    for file in &report.files {
+        println!("{:<11} {}", file.outcome.verb(), file.path);
+    }
+    println!("{:<11} project.godot", report.project_godot.verb());
+
+    if changed && !check {
+        println!();
+        println!("restart the Godot editor to load the plugin");
+    }
+}
+
+/// Renders `plugin status`; never a failure path, only state.
+pub fn plugin_status(fmt: Fmt, status: &PluginStatus) {
+    if fmt.json {
+        match serde_json::to_string_pretty(status) {
+            Ok(text) => println!("{text}"),
+            Err(error) => eprintln!("error: cannot serialise status: {error}"),
+        }
+        return;
+    }
+    if fmt.quiet {
+        println!("{}", status.state);
+        return;
+    }
+
+    println!("project: {}", status.project);
+    if status.endpoint.present {
+        match &status.endpoint.error {
+            Some(error) => println!(
+                "endpoint: present but unreadable: {} ({error})",
+                status.endpoint.path
+            ),
+            None => println!("endpoint: present: {}", status.endpoint.path),
+        }
+    } else {
+        println!("endpoint: missing: {}", status.endpoint.path);
+    }
+    println!(
+        "installed: {}",
+        status
+            .installed_version
+            .as_deref()
+            .unwrap_or("not installed")
+    );
+    println!(
+        "embedded: {}",
+        status.embedded_version.as_deref().unwrap_or("unknown")
+    );
+    println!("cli: {}", status.cli_version);
+    println!(
+        "plugin: {}",
+        match &status.live.plugin_version {
+            Some(version) => format!("{version} (live)"),
+            None => "unavailable (editor not reachable)".to_string(),
+        }
+    );
+
+    let mut protocols = vec![format!("cli {PROTOCOL}")];
+    let mut mismatch = false;
+    if let Some(protocol) = status.endpoint.protocol {
+        protocols.push(format!("endpoint {protocol}"));
+        mismatch |= protocol != PROTOCOL;
+    }
+    if let Some(protocol) = status.live.protocol {
+        protocols.push(format!("live {protocol}"));
+        mismatch |= protocol != PROTOCOL;
+    }
+    println!(
+        "protocol: {} ({})",
+        protocols.join(", "),
+        if mismatch { "mismatch" } else { "match" }
+    );
+
+    if status.live.reachable {
+        let mut details = Vec::new();
+        if let Some(godot) = &status.live.godot {
+            details.push(format!("godot {godot}"));
+        }
+        if let Some(pid) = status.endpoint.pid {
+            details.push(format!("pid {pid}"));
+        }
+        println!(
+            "editor: reachable ({})",
+            if details.is_empty() {
+                "no details".to_string()
+            } else {
+                details.join(", ")
+            }
+        );
+    } else {
+        println!(
+            "editor: unreachable: {}",
+            status.live.error.as_deref().unwrap_or("no endpoint")
+        );
+    }
+    println!("state: {}", status.state);
+
+    if let Some(installed) = &status.installed_version
+        && installed != status.cli_version
+        && status.live.reachable
+    {
+        println!(
+            "note: installed plugin is v{installed}, this CLI is v{}",
+            status.cli_version
+        );
+    }
+    if let Some(hint) = status.upgrade_hint() {
+        println!("note: {hint}");
+    }
+}
+
+fn print_json(value: &Value) {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => println!("{text}"),
+        Err(error) => eprintln!("error: cannot serialise response: {error}"),
+    }
+}
+
+fn print_quiet(cmd: &str, data: &Value) {
+    let lines: Vec<String> = match cmd {
+        "scene.roots" => entries(data, "scenes", "path"),
+        "prop.list" => entries(data, "props", "name"),
+        "scene.tree" => entries(data, "nodes", "path"),
+        "meta.capabilities" => entries(data, "capabilities", ""),
+        _ => primary_scalar(cmd, data).into_iter().collect(),
+    };
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+fn entries(data: &Value, key: &str, field: &str) -> Vec<String> {
+    let Some(items) = data.get(key).and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|item| {
+            if field.is_empty() {
+                cell(item)
+            } else {
+                item.get(field).map(cell).unwrap_or_default()
+            }
+        })
+        .collect()
+}
+
+/// The one value a script wants: a path, a rendered property value, a project.
+fn primary_scalar(cmd: &str, data: &Value) -> Option<String> {
+    let preferred = match cmd {
+        "prop.get" | "prop.set" => "value_text",
+        "editor.status" | "meta.ping" => "project",
+        _ => "path",
+    };
+    if let Some(value) = data.get(preferred)
+        && !value.is_null()
+    {
+        return Some(cell(value));
+    }
+    for key in ["path", "project", "value_text", "name"] {
+        if let Some(value) = data.get(key)
+            && !value.is_null()
+        {
+            return Some(cell(value));
+        }
+    }
+    if data.as_object().is_some_and(|object| object.is_empty()) {
+        return None;
+    }
+    serde_json::to_string(data).ok()
+}
+
+fn render_tree(data: &Value) {
+    let Some(nodes) = data.get("nodes").and_then(Value::as_array) else {
+        return;
+    };
+    let root_path = nodes
+        .first()
+        .and_then(|node| node.get("path"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    for node in nodes {
+        let path = node.get("path").and_then(Value::as_str).unwrap_or("");
+        let depth = if path == root_path {
+            0
+        } else if root_path.is_empty() {
+            path.matches('/').count() + 1
+        } else {
+            path.matches('/').count()
+        };
+        let name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path));
+        let kind = node.get("type").and_then(Value::as_str).unwrap_or("?");
+        let indent = "  ".repeat(depth);
+
+        let mut line = format!("{indent}{name} ({kind})");
+        if let Some(script) = node.get("script").and_then(Value::as_str) {
+            line.push_str(&format!(" script={script}"));
+        }
+        if let Some(instance) = node.get("instance").and_then(Value::as_str) {
+            line.push_str(&format!(" instance={instance}"));
+        }
+        println!("{line}");
+
+        if let Some(props) = node.get("props").and_then(Value::as_object) {
+            let property_indent = "  ".repeat(depth + 1);
+            for (key, value) in props {
+                println!("{property_indent}{key} = {}", cell(value));
+            }
+        }
+    }
+}
+
+fn render_scene_roots(data: &Value) {
+    let rows = data
+        .get("scenes")
+        .and_then(Value::as_array)
+        .map(|scenes| {
+            scenes
+                .iter()
+                .map(|scene| {
+                    vec![
+                        scene
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        yes_no(scene.get("unsaved").and_then(Value::as_bool)),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    print_table(&["SCENE", "UNSAVED"], &rows);
+}
+
+fn render_prop_list(data: &Value) {
+    let rows = data
+        .get("props")
+        .and_then(Value::as_array)
+        .map(|props| {
+            props
+                .iter()
+                .map(|property| {
+                    vec![
+                        property
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        property
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        property.get("value_text").map(cell).unwrap_or_default(),
+                        yes_no(property.get("is_default").and_then(Value::as_bool)),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    print_table(&["NAME", "TYPE", "VALUE", "DEFAULT"], &rows);
+}
+
+fn render_object(cmd: &str, data: &Value) {
+    let Some(object) = data.as_object() else {
+        println!("{}", cell(data));
+        return;
+    };
+    if object.is_empty() {
+        return;
+    }
+
+    let order = preferred_keys(cmd);
+    let mut keys: Vec<&String> = order
+        .iter()
+        .filter_map(|key| object.get_key_value(*key).map(|(key, _)| key))
+        .collect();
+    for key in object.keys() {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+
+    let width = keys
+        .iter()
+        .map(|key| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    for key in keys {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        let rendered = cell(value);
+        if rendered.is_empty() {
+            println!("{key}:");
+        } else {
+            println!("{key:<width$}: {rendered}", width = width);
+        }
+    }
+}
+
+fn preferred_keys(cmd: &str) -> &'static [&'static str] {
+    match cmd {
+        "editor.status" => &[
+            "project",
+            "godot",
+            "edited_scene",
+            "open_scenes",
+            "unsaved",
+            "playing",
+            "playing_scene",
+        ],
+        "meta.ping" => &[
+            "protocol",
+            "plugin_version",
+            "godot",
+            "project",
+            "capabilities",
+        ],
+        "prop.get" => &["name", "type", "value", "value_text", "is_default"],
+        "prop.set" => &["name", "type", "value_text"],
+        "node.add" => &["path", "type"],
+        _ => &["path", "type", "project", "name", "value_text"],
+    }
+}
+
+fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    let mut widths: Vec<usize> = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect();
+    for row in rows {
+        for (index, item) in row.iter().enumerate() {
+            if let Some(width) = widths.get_mut(index) {
+                *width = (*width).max(item.chars().count());
+            }
+        }
+    }
+
+    let mut line = String::new();
+    for (index, header) in headers.iter().enumerate() {
+        line.push_str(&format!("{header:<width$}", width = widths[index]));
+        if index + 1 < headers.len() {
+            line.push_str("  ");
+        }
+    }
+    println!("{}", line.trim_end());
+
+    for row in rows {
+        let mut line = String::new();
+        for (index, item) in row.iter().enumerate() {
+            if index >= headers.len() {
+                break;
+            }
+            line.push_str(&format!("{item:<width$}", width = widths[index]));
+            if index + 1 < headers.len() {
+                line.push_str("  ");
+            }
+        }
+        println!("{}", line.trim_end());
+    }
+}
+
+fn yes_no(value: Option<bool>) -> String {
+    if value.unwrap_or(false) {
+        "yes".to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn cell(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        Value::Array(items) if items.iter().any(Value::is_object) => {
+            serde_json::to_string(value).unwrap_or_default()
+        }
+        Value::Array(items) => items.iter().map(cell).collect::<Vec<_>>().join(", "),
+        Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
+        other => other.to_string(),
+    }
+}
