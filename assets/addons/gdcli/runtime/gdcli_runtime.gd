@@ -12,7 +12,12 @@ extends Node
 # the node never registers, never prints and never answers.
 
 const CAPTURE := "gdcli"
-const RUNTIME_VERSION := "0.5.0"
+const RUNTIME_VERSION := "0.6.0"
+
+# A fresh game still has an empty viewport texture; the same two-frame wait the
+# editor screenshots use (PROTOCOL section 10) applies here.
+const SHOT_FRAMES := 2
+const NO_DISPLAY_HINT := "run the game with a display (not --headless), e.g. under xvfb-run"
 
 const DENY_PROPS := [
 	"script",
@@ -70,6 +75,10 @@ func _on_request(suffix: String, data: Array) -> bool:
 		result = _set_prop(args)
 	elif cmd == "game.eval":
 		result = _eval(args)
+	elif cmd == "game.screenshot":
+		# Replies later, after two rendered frames; it owns its own reply.
+		call_deferred("_screenshot", id, args)
+		return true
 	else:
 		result = _err("UNKNOWN_CMD", "unknown command '%s'" % cmd,
 			"run `gdcli game --help`")
@@ -187,6 +196,87 @@ func _eval(args: Dictionary) -> Dictionary:
 	if expression.has_execute_failed():
 		return _err("BAD_ARGS", "expression failed: %s" % expression.get_error_text())
 	return _ok({"type": _type_of(value), "value_text": var_to_str(value)})
+
+
+# `game.screenshot` (PROTOCOL section 12): capture the game's viewport, write the
+# PNG here and answer `{path,width,height}` — the editor only correlates ids, no
+# image bytes cross the debugger. Runs as a coroutine so the two-frame wait does
+# not block the game; the reply goes out when it resumes.
+func _screenshot(id: Variant, args: Dictionary) -> void:
+	var target := _output_path(args.get("path", null))
+	if target.has("error"):
+		_fail(id, target["error"])
+		return
+	if DisplayServer.get_name() == "headless":
+		_fail(id, _no_display())
+		return
+	# Same ordering as editor.screenshot (section 10): no rendering surface means
+	# NO_API, and a dry run only reports what it would write.
+	if bool(args.get("dry_run", false)):
+		_reply(id, true, {
+			"path": String(target["reported"]),
+			"planned": [{"op": "screenshot", "path": String(target["absolute"])}],
+		})
+		return
+
+	for _i in range(SHOT_FRAMES):
+		await get_tree().process_frame
+
+	var viewport := get_viewport()
+	var texture: Texture2D = viewport.get_texture() if viewport != null else null
+	# A dummy renderer still has a viewport, but get_image() returns null or an
+	# empty image; never write a file in that case.
+	var image: Image = texture.get_image() if texture != null else null
+	if image == null or image.is_empty():
+		_fail(id, _no_display())
+		return
+
+	var absolute := String(target["absolute"])
+	var directory := absolute.get_base_dir()
+	if not DirAccess.dir_exists_absolute(directory):
+		var made := DirAccess.make_dir_recursive_absolute(directory)
+		if made != OK:
+			_fail(id, _err("GODOT_ERROR", "cannot create '%s': %s"
+				% [directory, error_string(made)]))
+			return
+	var error := image.save_png(absolute)
+	if error != OK:
+		_fail(id, _err("GODOT_ERROR", "cannot save '%s': %s"
+			% [absolute, error_string(error)]))
+		return
+	_reply(id, true, {
+		"path": String(target["reported"]),
+		"width": image.get_width(),
+		"height": image.get_height(),
+	})
+
+
+# _err() builds a full envelope, so a non-ok reply unwraps it: the game side of
+# the bridge sends [id, ok, payload] where payload is the error object itself.
+func _fail(id: Variant, envelope: Dictionary) -> void:
+	_reply(id, false, envelope["error"])
+
+
+func _no_display() -> Dictionary:
+	return _err("NO_API", "the game has no rendering surface to capture", NO_DISPLAY_HINT)
+
+
+# Relative paths resolve against the game's project root; res:// and user:// keep
+# their protocol form in the reply, absolute and relative inputs answer absolutely.
+# Returns {"absolute","reported"} or {"error": <envelope>}.
+func _output_path(raw: Variant) -> Dictionary:
+	if typeof(raw) != TYPE_STRING:
+		return {"error": _err("BAD_ARGS", "missing `path`")}
+	var path := String(raw).strip_edges()
+	if path == "":
+		return {"error": _err("BAD_ARGS", "missing `path`")}
+	if path.begins_with("res://") or path.begins_with("user://"):
+		return {"absolute": ProjectSettings.globalize_path(path), "reported": path}
+	if path.is_absolute_path():
+		var absolute := path.simplify_path()
+		return {"absolute": absolute, "reported": absolute}
+	var joined := ProjectSettings.globalize_path("res://").path_join(path).simplify_path()
+	return {"absolute": joined, "reported": joined}
 
 
 # --- addressing --------------------------------------------------------------

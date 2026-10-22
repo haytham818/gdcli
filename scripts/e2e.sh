@@ -19,6 +19,9 @@ cargo build --manifest-path "$REPO/Cargo.toml" --quiet
 step "fresh fixture in $WORK"
 rm -rf "$WORK"; mkdir -p "$WORK"
 cp "$REPO"/tests/fixture/project.godot "$REPO"/tests/fixture/*.tscn "$REPO"/tests/fixture/*.gd "$WORK"/
+mkdir -p "$WORK/addons/probe"
+printf '[plugin]\n\nname="probe"\ndescription="e2e probe plugin"\nversion="0.0.1"\nscript="plugin.gd"\n' >"$WORK/addons/probe/plugin.cfg"
+printf '@tool\nextends EditorPlugin\n' >"$WORK/addons/probe/plugin.gd"
 
 step "plugin install"
 "$BIN" plugin install --project "$WORK" | sed 's/^/    /'
@@ -200,6 +203,35 @@ step "save-as + roots + reload"
 "$BIN" scene tree --project "$WORK" --quiet | sed 's/^/    /'
 grep -q 'instance=ExtResource' "$WORK/copies/main2.tscn" || fail "save-as flattened the instance"
 
+step "M5: plugin toggles"
+PLUGINS="$("$BIN" project plugins list --project "$WORK" --json)"
+python3 - "$PLUGINS" <<'PY'
+import json, sys
+plugins = {p["name"]: p for p in json.loads(sys.argv[1])["plugins"]}
+assert "gdcli" in plugins and plugins["gdcli"]["enabled"], plugins
+assert "probe" in plugins and not plugins["probe"]["enabled"], plugins
+print("    listed:", sorted(plugins))
+PY
+"$BIN" project plugins enable probe --project "$WORK" | sed 's/^/    /'
+"$BIN" project plugins list --project "$WORK" --quiet | tr '\n' ' ' | sed 's/^/    /'; echo
+set +e
+"$BIN" project plugins enable nope --project "$WORK" >/dev/null 2>&1
+CODE=$?
+set -e
+[[ $CODE -eq 3 ]] || fail "enabling an unknown plugin should exit 3, got $CODE"
+"$BIN" project plugins disable probe --project "$WORK" | sed 's/^/    /'
+
+step "M5: private install"
+PW="$WORK/private"
+rm -rf "$PW"; mkdir -p "$PW"
+cp "$REPO"/tests/fixture/project.godot "$PW"/
+"$BIN" plugin install --check --private --project "$PW" >/dev/null
+[[ ! -f "$PW/.gitignore" ]] || fail "--check wrote .gitignore"
+"$BIN" plugin install --private --project "$PW" | sed 's/^/    /'
+grep -qx 'addons/gdcli/' "$PW/.gitignore" || fail ".gitignore missing addons/gdcli/"
+"$BIN" plugin install --private --project "$PW" >/dev/null
+[[ "$(grep -c '^addons/gdcli/$' "$PW/.gitignore")" == "1" ]] || fail ".gitignore entry duplicated"
+
 step "M3: ui state, play/stop, game read-only"
 "$BIN" editor select Inst --project "$WORK" | sed 's/^/    /'
 "$BIN" editor select Inst Btn --add --project "$WORK" | sed 's/^/    /'
@@ -265,6 +297,15 @@ PY
 	[[ "$GOT" == *patched* ]] || fail "game set did not take effect in the running game (got '$GOT')"
 	EVAL="$("$BIN" game eval '1 + 1' --quiet --project "$GW")"
 	[[ "$EVAL" == "2" ]] || fail "game eval returned '$EVAL'"
+	"$BIN" game screenshot --out "$GW/game.png" --project "$GW" | sed 's/^/    /'
+	python3 - "$GW/game.png" <<'PY'
+import struct, sys, pathlib
+data = pathlib.Path(sys.argv[1]).read_bytes()
+assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+w, h = struct.unpack(">II", data[16:24])
+assert w > 100 and h > 100, (w, h)
+print("    game.png %dx%d ok" % (w, h))
+PY
 	"$BIN" game logs --limit 10 --project "$GW" | sed 's/^/    /'
 	"$BIN" editor stop --project "$GW" | sed 's/^/    /'
 

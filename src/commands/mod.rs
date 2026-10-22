@@ -16,9 +16,12 @@ pub mod scene;
 pub mod script;
 pub mod signal;
 
+use std::path::Path;
+
 use serde_json::Value;
 
 use crate::client::Opts;
+use crate::error::{Error, Result};
 
 /// One wire request plus whether the undo/dry-run options apply to it.
 #[derive(Debug)]
@@ -73,4 +76,21 @@ impl Call {
             dry_run,
         })
     }
+}
+
+/// The absolute path a screenshot request carries: create the parent
+/// directories, resolve them, then append the file name.
+pub fn absolute_output(out: &Path) -> Result<String> {
+    let name = out
+        .file_name()
+        .ok_or_else(|| Error::usage(format!("--out must name a file: {}", out.display())))?;
+    let parent = out
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|error| Error::usage(format!("cannot create {}: {error}", parent.display())))?;
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|error| Error::usage(format!("cannot resolve {}: {error}", parent.display())))?;
+    Ok(parent.join(name).to_string_lossy().into_owned())
 }

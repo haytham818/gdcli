@@ -15,6 +15,9 @@ pub const PLUGIN_PATH: &str = "res://addons/gdcli/plugin.cfg";
 
 const INSTALLED_CFG: &str = "addons/gdcli/plugin.cfg";
 
+/// Entry `--private` appends to the project's `.gitignore`.
+pub const GITIGNORE_ENTRY: &str = "addons/gdcli/";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Wrote,
@@ -45,14 +48,32 @@ pub struct FileReport {
     pub outcome: Outcome,
 }
 
+/// The `.gitignore` patch `plugin install --private` performs.
+pub struct GitignoreReport {
+    pub path: &'static str,
+    pub entry: &'static str,
+    pub outcome: Outcome,
+}
+
 pub struct InstallReport {
     pub project: String,
     pub files: Vec<FileReport>,
     pub project_godot: Outcome,
+    /// `Some` only for `--private`.
+    pub gitignore: Option<GitignoreReport>,
 }
 
 impl InstallReport {
     pub fn changed(&self) -> bool {
+        self.plugin_changed()
+            || self
+                .gitignore
+                .as_ref()
+                .is_some_and(|gitignore| gitignore.outcome != Outcome::Unchanged)
+    }
+
+    /// Whether the editor has to restart to pick up the install.
+    pub fn plugin_changed(&self) -> bool {
         self.project_godot != Outcome::Unchanged
             || self
                 .files
@@ -62,7 +83,10 @@ impl InstallReport {
 }
 
 /// Writes the embedded plugin into the project and enables it.
-pub fn install(project: &Path, check: bool) -> Result<InstallReport> {
+///
+/// With `private`, also adds `addons/gdcli/` to the project's `.gitignore`;
+/// `check` reports that write without performing it.
+pub fn install(project: &Path, check: bool, private: bool) -> Result<InstallReport> {
     let mut files = Vec::with_capacity(assets::FILES.len());
     for asset in assets::FILES {
         files.push(write_asset(project, asset, check)?);
@@ -83,11 +107,82 @@ pub fn install(project: &Path, check: bool) -> Result<InstallReport> {
         Outcome::Wrote
     };
 
+    let gitignore = if private {
+        Some(patch_gitignore(project, check)?)
+    } else {
+        None
+    };
+
     Ok(InstallReport {
         project: project.display().to_string(),
         files,
         project_godot,
+        gitignore,
     })
+}
+
+/// Adds `GITIGNORE_ENTRY` to `<project>/.gitignore`, creating the file when
+/// missing. Existing bytes and line endings are preserved.
+fn patch_gitignore(project: &Path, check: bool) -> Result<GitignoreReport> {
+    let path = project.join(".gitignore");
+    let current = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(Error::usage(format!(
+                "cannot read {}: {error}",
+                path.display()
+            )));
+        }
+    };
+
+    let (patched, changed) = add_gitignore_entry(&current, GITIGNORE_ENTRY);
+    let outcome = if !changed {
+        Outcome::Unchanged
+    } else if check {
+        Outcome::WouldWrite
+    } else {
+        fs::write(&path, patched)
+            .map_err(|error| Error::usage(format!("cannot write {}: {error}", path.display())))?;
+        Outcome::Wrote
+    };
+
+    Ok(GitignoreReport {
+        path: ".gitignore",
+        entry: GITIGNORE_ENTRY,
+        outcome,
+    })
+}
+
+/// Appends `entry` to a `.gitignore` unless an equivalent pattern is present,
+/// keeping the file's line endings.
+pub fn add_gitignore_entry(text: &str, entry: &str) -> (String, bool) {
+    if text.lines().any(|line| ignores_entry(line, entry)) {
+        return (text.to_string(), false);
+    }
+
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut output = String::with_capacity(text.len() + entry.len() + newline.len());
+    output.push_str(text);
+    if !text.is_empty() && !text.ends_with('\n') {
+        output.push_str(newline);
+    }
+    output.push_str(entry);
+    output.push_str(newline);
+    (output, true)
+}
+
+/// Whether one `.gitignore` line ignores the same directory as `entry`.
+fn ignores_entry(line: &str, entry: &str) -> bool {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+        return false;
+    }
+    normalise_pattern(line) == normalise_pattern(entry)
+}
+
+fn normalise_pattern(pattern: &str) -> &str {
+    pattern.trim_start_matches('/').trim_end_matches('/')
 }
 
 fn write_asset(project: &Path, asset: &assets::Asset, check: bool) -> Result<FileReport> {
@@ -524,5 +619,140 @@ mod tests {
         let error = enable_plugin("[editor_plugins]\nenabled=true\n", PLUGIN_PATH).unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.message().contains("PackedStringArray"));
+    }
+
+    fn temp_project(label: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "gdcli-install-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            label
+        ));
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("project.godot"), "config_version=5\n").unwrap();
+        path
+    }
+
+    #[test]
+    fn appends_the_gitignore_entry_after_existing_content() {
+        let (patched, changed) = add_gitignore_entry(".godot/\n*.tmp\n", GITIGNORE_ENTRY);
+        assert!(changed);
+        assert_eq!(patched, ".godot/\n*.tmp\naddons/gdcli/\n");
+    }
+
+    #[test]
+    fn adds_the_missing_newline_before_the_gitignore_entry() {
+        let (patched, changed) = add_gitignore_entry(".godot/", GITIGNORE_ENTRY);
+        assert!(changed);
+        assert_eq!(patched, ".godot/\naddons/gdcli/\n");
+    }
+
+    #[test]
+    fn leaves_an_already_ignored_addon_untouched() {
+        for text in [
+            ".godot/\naddons/gdcli/\n",
+            "addons/gdcli\n",
+            "/addons/gdcli/\n",
+            "  addons/gdcli/  \r\n",
+        ] {
+            assert_eq!(
+                add_gitignore_entry(text, GITIGNORE_ENTRY),
+                (text.to_string(), false),
+                "unexpected change for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_crlf_line_endings_in_gitignore() {
+        let (patched, changed) = add_gitignore_entry(".godot\r\n", GITIGNORE_ENTRY);
+        assert!(changed);
+        assert_eq!(patched, ".godot\r\naddons/gdcli/\r\n");
+    }
+
+    #[test]
+    fn creates_the_gitignore_file_when_missing() {
+        let project = temp_project("gitignore-create");
+        let report = patch_gitignore(&project, false).unwrap();
+
+        assert_eq!(report.path, ".gitignore");
+        assert_eq!(report.entry, GITIGNORE_ENTRY);
+        assert_eq!(report.outcome, Outcome::Wrote);
+        assert_eq!(
+            fs::read_to_string(project.join(".gitignore")).unwrap(),
+            "addons/gdcli/\n"
+        );
+
+        // A second run is a no-op.
+        let again = patch_gitignore(&project, false).unwrap();
+        assert_eq!(again.outcome, Outcome::Unchanged);
+
+        fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn check_reports_the_gitignore_write_without_touching_it() {
+        let project = temp_project("gitignore-check-missing");
+        let report = patch_gitignore(&project, true).unwrap();
+
+        assert_eq!(report.outcome, Outcome::WouldWrite);
+        assert!(!project.join(".gitignore").exists());
+
+        fs::write(project.join(".gitignore"), ".godot/\n").unwrap();
+        let report = patch_gitignore(&project, true).unwrap();
+        assert_eq!(report.outcome, Outcome::WouldWrite);
+        assert_eq!(
+            fs::read_to_string(project.join(".gitignore")).unwrap(),
+            ".godot/\n"
+        );
+
+        fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn install_check_does_not_create_the_gitignore() {
+        let project = temp_project("install-check");
+        let report = install(&project, true, true).unwrap();
+
+        assert!(
+            report
+                .gitignore
+                .as_ref()
+                .is_some_and(|gitignore| { gitignore.outcome == Outcome::WouldWrite })
+        );
+        assert!(!project.join(".gitignore").exists());
+
+        fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn install_private_writes_the_gitignore_and_reports_it() {
+        let project = temp_project("install-private");
+        let report = install(&project, false, true).unwrap();
+
+        assert!(report.changed());
+        assert!(report.plugin_changed());
+        assert_eq!(report.gitignore.as_ref().unwrap().outcome, Outcome::Wrote);
+        assert_eq!(
+            fs::read_to_string(project.join(".gitignore")).unwrap(),
+            "addons/gdcli/\n"
+        );
+
+        fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn install_without_private_leaves_the_gitignore_alone() {
+        let project = temp_project("install-no-private");
+        let report = install(&project, false, false).unwrap();
+
+        assert!(report.gitignore.is_none());
+        assert!(!project.join(".gitignore").exists());
+
+        fs::remove_dir_all(&project).unwrap();
     }
 }

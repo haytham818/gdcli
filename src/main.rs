@@ -146,6 +146,9 @@ enum PluginCommand {
         /// Report what would change without writing anything
         #[arg(long)]
         check: bool,
+        /// Add addons/gdcli/ to the project's .gitignore
+        #[arg(long)]
+        private: bool,
     },
     /// Rewrite the plugin files that differ from the embedded version
     Upgrade,
@@ -477,6 +480,27 @@ enum ProjectCommand {
         #[command(subcommand)]
         command: AutoloadCommand,
     },
+    /// List, enable or disable editor plugins
+    Plugins {
+        #[command(subcommand)]
+        command: PluginsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginsCommand {
+    /// List addons found in the project and whether they are enabled
+    List,
+    /// Enable a plugin by its plugin.cfg name
+    Enable {
+        /// Plugin name from plugin.cfg
+        name: String,
+    },
+    /// Disable a plugin by its plugin.cfg name
+    Disable {
+        /// Plugin name from plugin.cfg
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -620,6 +644,12 @@ enum GameCommand {
         /// Node address used as the expression's base instance
         #[arg(long, value_name = "P")]
         path: Option<String>,
+    },
+    /// Save a screenshot of the running game
+    Screenshot {
+        /// Output PNG path; parent directories are created
+        #[arg(long, value_name = "PATH")]
+        out: PathBuf,
     },
 }
 
@@ -769,7 +799,10 @@ fn run() -> i32 {
 fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
     if let Command::Plugin { command } = &cli.command {
         let action = match command {
-            PluginCommand::Install { check } => commands::plugin::Action::Install { check: *check },
+            PluginCommand::Install { check, private } => commands::plugin::Action::Install {
+                check: *check,
+                private: *private,
+            },
             PluginCommand::Upgrade => commands::plugin::Action::Upgrade,
             PluginCommand::Status => commands::plugin::Action::Status,
         };
@@ -951,6 +984,11 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                     }
                     AutoloadCommand::Remove { name } => commands::project::autoload_remove(name),
                 },
+                ProjectCommand::Plugins { command } => match command {
+                    PluginsCommand::List => commands::project::plugins_list(),
+                    PluginsCommand::Enable { name } => commands::project::plugins_enable(name),
+                    PluginsCommand::Disable { name } => commands::project::plugins_disable(name),
+                },
             };
             execute(&project, call, format, opts)
         }
@@ -990,6 +1028,7 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                     r#as,
                 } => commands::game::set(path, prop, value, r#as.as_str())?,
                 GameCommand::Eval { expr, path } => commands::game::eval(expr, path.as_deref()),
+                GameCommand::Screenshot { out } => commands::game::screenshot(out)?,
             };
             execute(&project, call, format, opts)
         }
@@ -1382,5 +1421,88 @@ mod tests {
     #[test]
     fn game_eval_rejects_an_as_mode() {
         assert!(Cli::try_parse_from(["gdcli", "game", "eval", "fps", "--as", "gd"]).is_err());
+    }
+
+    #[test]
+    fn project_plugins_commands_parse() {
+        let cli = Cli::try_parse_from(["gdcli", "project", "plugins", "list"])
+            .expect("parse plugins list");
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectCommand::Plugins {
+                    command: PluginsCommand::List
+                }
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["gdcli", "project", "plugins", "enable", "gdcli"])
+            .expect("parse plugins enable");
+        let Command::Project {
+            command:
+                ProjectCommand::Plugins {
+                    command: PluginsCommand::Enable { name },
+                },
+        } = cli.command
+        else {
+            panic!("expected project plugins enable");
+        };
+        assert_eq!(name, "gdcli");
+
+        let cli = Cli::try_parse_from(["gdcli", "project", "plugins", "disable", "gdcli"])
+            .expect("parse plugins disable");
+        let Command::Project {
+            command:
+                ProjectCommand::Plugins {
+                    command: PluginsCommand::Disable { name },
+                },
+        } = cli.command
+        else {
+            panic!("expected project plugins disable");
+        };
+        assert_eq!(name, "gdcli");
+
+        assert!(Cli::try_parse_from(["gdcli", "project", "plugins", "enable"]).is_err());
+        assert!(Cli::try_parse_from(["gdcli", "project", "plugins"]).is_err());
+    }
+
+    #[test]
+    fn game_screenshot_needs_out() {
+        let cli = Cli::try_parse_from(["gdcli", "game", "screenshot", "--out", "shot.png"])
+            .expect("parse game screenshot");
+        let Command::Game {
+            command: GameCommand::Screenshot { out },
+        } = cli.command
+        else {
+            panic!("expected game screenshot");
+        };
+        assert_eq!(out, PathBuf::from("shot.png"));
+
+        assert!(Cli::try_parse_from(["gdcli", "game", "screenshot"]).is_err());
+    }
+
+    #[test]
+    fn plugin_install_takes_check_and_private() {
+        let cli =
+            Cli::try_parse_from(["gdcli", "plugin", "install"]).expect("parse plugin install");
+        let Command::Plugin {
+            command: PluginCommand::Install { check, private },
+        } = cli.command
+        else {
+            panic!("expected plugin install");
+        };
+        assert!(!check);
+        assert!(!private);
+
+        let cli = Cli::try_parse_from(["gdcli", "plugin", "install", "--check", "--private"])
+            .expect("parse private install");
+        let Command::Plugin {
+            command: PluginCommand::Install { check, private },
+        } = cli.command
+        else {
+            panic!("expected plugin install");
+        };
+        assert!(check);
+        assert!(private);
     }
 }

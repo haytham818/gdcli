@@ -97,6 +97,8 @@ the user's history as `gdcli: <cmd>`.
   returns `NO_API`, `xvfb-run -a -s "-screen 0 1600x1000x24" godot --editor ...` produces
   real 1844x1189 sub-viewport and 2560x1398 whole-window PNGs. Game *output* is not
   observable on 4.7 (see below).
+* **M5** (shipped, plugin 0.6.0) — `project plugins list/enable/disable`,
+  `game screenshot`, and `plugin install --private` (gitignored addon).
 * **M4** (shipped, plugin 0.5.0) — `runtime install/uninstall/status` and `game
   ping/tree/get/set/eval` over an `EngineDebugger` capture in the running game, with id
   correlation and a 3 s timeout in the editor. Opt-in: the autoload is a project file.

@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -6,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::client::Client;
-use crate::commands::Call;
+use crate::commands::{Call, absolute_output};
 use crate::error::{Error, Result};
 
 /// Both ends clamp: the plugin repeats the clamp, the CLI fails fast on nonsense.
@@ -84,23 +83,6 @@ pub fn stop() -> Call {
     Call::write_no_undo("editor.stop", json!({}))
 }
 
-/// The absolute path a screenshot request carries: create the parent
-/// directories, resolve them, then append the file name.
-fn absolute_output(out: &Path) -> Result<String> {
-    let name = out
-        .file_name()
-        .ok_or_else(|| Error::usage(format!("--out must name a file: {}", out.display())))?;
-    let parent = out
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)
-        .map_err(|error| Error::usage(format!("cannot create {}: {error}", parent.display())))?;
-    let parent = fs::canonicalize(parent)
-        .map_err(|error| Error::usage(format!("cannot resolve {}: {error}", parent.display())))?;
-    Ok(parent.join(name).to_string_lossy().into_owned())
-}
-
 fn clamp_count(count: i64) -> i64 {
     count.clamp(1, MAX_COUNT)
 }
@@ -151,6 +133,7 @@ pub fn wait(client: &mut Client) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

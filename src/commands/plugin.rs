@@ -6,7 +6,7 @@ use crate::install;
 use crate::output::{self, Fmt};
 
 pub enum Action {
-    Install { check: bool },
+    Install { check: bool, private: bool },
     Upgrade,
     Status,
 }
@@ -14,13 +14,13 @@ pub enum Action {
 pub fn run(project: Option<&Path>, action: Action, fmt: Fmt) -> Result<()> {
     let project = client::discover_project(project)?;
     match action {
-        Action::Install { check } => {
-            let report = install::install(&project, check)?;
+        Action::Install { check, private } => {
+            let report = install::install(&project, check, private)?;
             output::install_report(fmt, &report, check);
             Ok(())
         }
         Action::Upgrade => {
-            let report = install::install(&project, false)?;
+            let report = install::install(&project, false, false)?;
             output::install_report(fmt, &report, false);
             Ok(())
         }

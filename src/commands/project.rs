@@ -29,6 +29,20 @@ pub fn autoload_remove(name: &str) -> Call {
     Call::write_no_undo("project.autoload.remove", json!({ "name": name }))
 }
 
+/// Addons found on disk plus their enabled state (PROTOCOL §12).
+pub fn plugins_list() -> Call {
+    Call::read("project.plugins.list", json!({}))
+}
+
+/// `name` is the plugin's `plugin.cfg` name, not its directory.
+pub fn plugins_enable(name: &str) -> Call {
+    Call::write_no_undo("project.plugins.enable", json!({ "name": name }))
+}
+
+pub fn plugins_disable(name: &str) -> Call {
+    Call::write_no_undo("project.plugins.disable", json!({ "name": name }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +82,31 @@ mod tests {
         assert_eq!(remove.cmd, "project.autoload.remove");
         assert_eq!(remove.args["name"], "Game");
         assert!(!remove.undoable);
+    }
+
+    #[test]
+    fn plugins_list_is_read_only() {
+        let call = plugins_list();
+        assert_eq!(call.cmd, "project.plugins.list");
+        assert!(!call.mutating);
+        assert_eq!(call.args, json!({}));
+        assert!(call.opts(true, true).is_none());
+    }
+
+    #[test]
+    fn plugins_enable_and_disable_are_non_undoable_mutations() {
+        let enable = plugins_enable("gdcli");
+        assert_eq!(enable.cmd, "project.plugins.enable");
+        assert!(enable.mutating);
+        assert!(!enable.undoable);
+        assert_eq!(enable.args["name"], "gdcli");
+        assert!(enable.opts(true, true).unwrap().undo.is_none());
+
+        let disable = plugins_disable("gdcli");
+        assert_eq!(disable.cmd, "project.plugins.disable");
+        assert!(disable.mutating);
+        assert!(!disable.undoable);
+        assert_eq!(disable.args["name"], "gdcli");
+        assert!(disable.opts(true, true).unwrap().undo.is_none());
     }
 }

@@ -31,6 +31,15 @@ static func register(reg: Dictionary) -> void:
 		return _remote("game.set", args, opts)
 	reg["game.eval"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
 		return _remote("game.eval", args, opts)
+	# The runtime captures and writes the PNG inside the game; only the resulting
+	# path and dimensions come back, never image bytes (PROTOCOL section 12).
+	# Screenshots write a file, so `dry_run` rides along (section 4): the runtime
+	# validates the path and answers `planned` without capturing or writing.
+	reg["game.screenshot"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		if bool(opts.get("dry_run", false)):
+			args = args.duplicate()
+			args["dry_run"] = true
+		return _remote("game.screenshot", args, opts)
 
 
 # The reply arrives later; plugin.gd owns the correlation id, the 3 s timeout

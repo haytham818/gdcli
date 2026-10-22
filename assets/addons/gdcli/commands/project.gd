@@ -3,6 +3,10 @@ extends RefCounted
 const M = preload("meta.gd")
 
 const AUTOLOAD_PREFIX := "autoload/"
+const ADDONS_DIR := "res://addons"
+const PLUGIN_CFG := "plugin.cfg"
+
+const PLUGINS_HINT := "run `gdcli project plugins list`"
 
 
 static func register(reg: Dictionary) -> void:
@@ -16,6 +20,12 @@ static func register(reg: Dictionary) -> void:
 		return _autoload_add(args, opts)
 	reg["project.autoload.remove"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
 		return _autoload_remove(args, opts)
+	reg["project.plugins.list"] = func(_args: Dictionary, _opts: Dictionary) -> Dictionary:
+		return M.ok({"plugins": _plugins()})
+	reg["project.plugins.enable"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _plugin_set(args, opts, true)
+	reg["project.plugins.disable"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _plugin_set(args, opts, false)
 
 
 static func _s(args: Dictionary, key: String, fallback: String = "") -> String:
@@ -226,3 +236,77 @@ static func _autoload_remove(args: Dictionary, opts: Dictionary) -> Dictionary:
 	if not _find_autoload(name).is_empty():
 		return M.err("GODOT_ERROR", "remove_autoload_singleton('%s') did not remove it" % name)
 	return M.ok({})
+
+
+# --- plugins -----------------------------------------------------------------
+
+# On-disk discovery (PROTOCOL section 12): every res://addons/<dir>/plugin.cfg,
+# parsed with ConfigFile so `name`/`version` are exactly what the editor sees.
+# The enabled flag comes from the editor, not from project.godot: it is the only
+# source that also knows about plugins toggled during this session.
+#
+# A malformed plugin.cfg is skipped rather than fatal: one broken add-on must not
+# hide the rest of the list (and the editor itself would warn about it anyway).
+static func _plugins() -> Array:
+	var out: Array = []
+	var addons := DirAccess.open(ADDONS_DIR)
+	if addons == null:
+		return out
+	for dir_name in addons.get_directories():
+		var path := ADDONS_DIR.path_join(String(dir_name)).path_join(PLUGIN_CFG)
+		if not FileAccess.file_exists(path):
+			continue
+		var cfg := ConfigFile.new()
+		if cfg.load(path) != OK:
+			continue
+		var name := String(cfg.get_value("plugin", "name", "")).strip_edges()
+		if name == "":
+			continue
+		var version: Variant = cfg.get_value("plugin", "version", null)
+		out.append({
+			"name": name,
+			"path": path,
+			"enabled": EditorInterface.is_plugin_enabled(name),
+			"version": String(version).strip_edges() if version != null else null,
+		})
+	out.sort_custom(func(a, b): return a["name"] < b["name"])
+	return out
+
+
+static func _find_plugin(name: String) -> Dictionary:
+	for entry in _plugins():
+		if entry["name"] == name:
+			return entry
+	return {}
+
+
+# `name` is the plugin.cfg `name` field, not the directory (section 12). The
+# editor resolves it in its filesystem cache, so a plugin written this session
+# needs `fs scan --wait` before it can be toggled.
+static func _plugin_set(args: Dictionary, opts: Dictionary, enabled: bool) -> Dictionary:
+	var name := _s(args, "name").strip_edges()
+	if name == "":
+		return M.err("BAD_ARGS", "missing `name`", PLUGINS_HINT)
+	var entry := _find_plugin(name)
+	if entry.is_empty():
+		return M.err("NOT_FOUND", "plugin '%s' not found" % name, PLUGINS_HINT)
+
+	if bool(opts.get("dry_run", false)):
+		var planned := {"name": name, "enabled": enabled}
+		planned["planned"] = [{
+			"op": "enable_plugin" if enabled else "disable_plugin",
+			"name": name,
+			"path": entry["path"],
+		}]
+		return M.ok(planned)
+
+	# Disabling gdcli itself runs our own _exit_tree: the listener, the endpoint
+	# file and every client connection go away with it, so this reply (and the
+	# rest of the session) will not arrive. That is expected, not a bug.
+	EditorInterface.set_plugin_enabled(name, enabled)
+	var actual := EditorInterface.is_plugin_enabled(name)
+	if actual != enabled:
+		return M.err("GODOT_ERROR",
+			"the editor did not %s plugin '%s'" % ["enable" if enabled else "disable", name],
+			"the plugin may not be in the editor's filesystem cache; run `gdcli fs scan --wait`, then retry")
+	return M.ok({"name": name, "enabled": actual})

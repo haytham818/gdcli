@@ -106,7 +106,7 @@ pub fn run(project: Option<&Path>, action: Action, fmt: Fmt) -> Result<()> {
 }
 
 fn install(project: &Path, fmt: Fmt) -> Result<()> {
-    let report = install::install(project, false)?;
+    let report = install::install(project, false, false)?;
 
     let mut client = match Client::connect(project) {
         Ok(client) => client,

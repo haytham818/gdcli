@@ -408,3 +408,57 @@ arbitrary code inside the game and is documented as such — it is never implici
 
 The runtime must be inert when no debugger is attached (`EngineDebugger.is_active()` false)
 and must never print to stdout on its own.
+
+## 12. Commands (M5, plugin 0.6.0)
+
+### project (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `project.plugins.list` | — | `{"plugins":[{"name","path","enabled":bool,"version":str?}]}` |
+| `project.plugins.enable` | `{"name"}` | `{"name","enabled":true}` |
+| `project.plugins.disable` | `{"name"}` | `{"name","enabled":false}` |
+
+`list` merges two sources: every `res://addons/*/plugin.cfg` found on disk (parsed with
+`ConfigFile`, so `name` and `version` come from the file) and the editor's enabled state via
+`EditorInterface.is_plugin_enabled(name)`. `enable`/`disable` call
+`EditorInterface.set_plugin_enabled(name, bool)` and re-read the state before replying;
+`name` is the plugin's `name` field, not its directory.
+
+`list` is sorted by `name`; `version` is `null` when the config omits it, and a malformed
+`plugin.cfg` (no `name`) is skipped rather than reported. If `set_plugin_enabled` leaves the
+state unchanged the command answers `GODOT_ERROR` with a `gdcli fs scan --wait` hint — the
+plugin is visible in `list` but not yet in the editor's cache, so `NOT_FOUND` would lie.
+`enable`/`disable` honour `dry_run` and return `planned`.
+
+Disabling `gdcli` itself tears down the bridge mid-request, so the reply may never arrive —
+that is expected, not a bug. Toggling requires the plugin to be in the editor's filesystem
+cache; run `fs scan --wait` first if it was just written.
+
+### game (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `game.screenshot` | `{"path"}` | `{"path","width","height"}` |
+
+The **runtime** captures `get_viewport().get_texture().get_image()` on the game's main
+thread, waits two rendered frames first, and writes the PNG itself (`Image.save_png`), the
+same contract as §10 editor screenshots: no image bytes on the wire, `path` may be absolute
+or project-relative, parent directories are created. With a dummy renderer (a game started
+headless) there is no texture: `NO_API` with a display hint, never an empty file.
+
+CLI surface for all of the above plus the private install mode:
+
+```
+gdcli project plugins list
+gdcli project plugins enable <name>
+gdcli project plugins disable <name>
+gdcli game screenshot --out <path>
+gdcli plugin install [--check] [--private]
+```
+
+`--private` additionally appends `addons/gdcli/` to the project's `.gitignore` (created if
+absent, idempotent) so the installed files never reach a shared repository. The
+`[editor_plugins]` line in `project.godot` is still written and is still tracked — a teammate
+without the addon will see a missing-plugin warning, so either everyone runs
+`gdcli plugin install` or the addon is committed instead.

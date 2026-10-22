@@ -6,7 +6,7 @@ extends EditorPlugin
 # editor down, because that takes the user's unsaved work with it.
 
 const PROTOCOL := 1
-const PLUGIN_VERSION := "0.5.0"
+const PLUGIN_VERSION := "0.6.0"
 const MAX_LINE := 1 << 20
 const OPEN_TIMEOUT_FRAMES := 120
 const GAME_TIMEOUT_MS := 3000

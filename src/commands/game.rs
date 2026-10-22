@@ -3,9 +3,11 @@
 //! `game.ping`, `game.tree`, `game.get`, `game.set` and `game.eval` need the
 //! `GdcliRuntime` autoload installed by `gdcli runtime install`.
 
+use std::path::Path;
+
 use serde_json::{Value, json};
 
-use crate::commands::Call;
+use crate::commands::{Call, absolute_output};
 use crate::error::{Error, Result};
 
 pub fn status() -> Call {
@@ -55,6 +57,15 @@ pub fn set(path: &str, name: &str, value: &str, mode: &str) -> Result<Call> {
     ))
 }
 
+/// Save a screenshot of the running game; the runtime writes the PNG itself
+/// (PROTOCOL §12), so only its path crosses the wire.
+pub fn screenshot(out: &Path) -> Result<Call> {
+    Ok(Call::write_no_undo(
+        "game.screenshot",
+        json!({ "path": absolute_output(out)? }),
+    ))
+}
+
 /// Evaluates an arbitrary GDScript expression inside the running game.
 ///
 /// **Dangerous**: this runs arbitrary code in the game process, with the node at
@@ -70,7 +81,26 @@ pub fn eval(expr: &str, path: Option<&str>) -> Call {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let mut path = env::temp_dir();
+        path.push(format!(
+            "gdcli-game-test-{}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst),
+            label
+        ));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
 
     #[test]
     fn status_is_read_only() {
@@ -156,6 +186,38 @@ mod tests {
             assert_eq!(error.exit_code(), 1);
             assert!(error.message().contains("--as"));
         }
+    }
+
+    #[test]
+    fn screenshot_resolves_the_output_under_its_parent() {
+        let root = temp_dir("screenshot");
+        let out = root.join("nest/deeper/shot.png");
+
+        let call = screenshot(&out).unwrap();
+        let expected = fs::canonicalize(root.join("nest/deeper"))
+            .unwrap()
+            .join("shot.png");
+        assert_eq!(call.cmd, "game.screenshot");
+        assert_eq!(call.args["path"], expected.to_string_lossy().as_ref());
+        assert!(expected.is_absolute());
+        assert!(root.join("nest/deeper").is_dir());
+        assert!(call.mutating);
+        assert!(!call.undoable);
+        assert!(call.opts(true, true).unwrap().undo.is_none());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn screenshot_resolves_a_bare_file_name_in_the_current_directory() {
+        let call = screenshot(Path::new("shot.png")).unwrap();
+        let expected = env::current_dir().unwrap().join("shot.png");
+        assert_eq!(call.args["path"], expected.to_string_lossy().as_ref());
+    }
+
+    #[test]
+    fn screenshot_rejects_a_path_without_a_file_name() {
+        assert!(screenshot(Path::new("/")).is_err());
     }
 
     #[test]

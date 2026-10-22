@@ -36,7 +36,9 @@ pub fn render(fmt: Fmt, cmd: &str, args: &Value, data: &Value) -> Result<()> {
         "editor.undo" | "editor.redo" => render_history_action(cmd, data),
         "editor.history" => render_history(data),
         "editor.play" | "editor.stop" => render_playing(cmd, data),
-        "editor.screenshot" => render_screenshot(data),
+        "editor.screenshot" | "game.screenshot" => render_screenshot(data),
+        "project.plugins.list" => render_plugins(data),
+        "project.plugins.enable" | "project.plugins.disable" => render_plugin_toggle(data),
         "game.logs" => print_lines(&game_log_lines(data)),
         "signal.list" => print_lines(&signal_lines(data)),
         "group.list" => render_group_list(data),
@@ -90,7 +92,7 @@ pub fn install_report(fmt: Fmt, report: &InstallReport, check: bool) {
             .iter()
             .map(|file| json!({"path": file.path, "status": file.outcome.as_str()}))
             .collect();
-        print_json(&json!({
+        let mut payload = json!({
             "project": report.project,
             "check": check,
             "changed": changed,
@@ -99,7 +101,15 @@ pub fn install_report(fmt: Fmt, report: &InstallReport, check: bool) {
                 "path": "project.godot",
                 "status": report.project_godot.as_str(),
             },
-        }));
+        });
+        if let Some(gitignore) = &report.gitignore {
+            payload["gitignore"] = json!({
+                "path": gitignore.path,
+                "entry": gitignore.entry,
+                "status": gitignore.outcome.as_str(),
+            });
+        }
+        print_json(&payload);
         return;
     }
 
@@ -112,6 +122,13 @@ pub fn install_report(fmt: Fmt, report: &InstallReport, check: bool) {
         if report.project_godot == Outcome::Wrote {
             println!("project.godot");
         }
+        if report
+            .gitignore
+            .as_ref()
+            .is_some_and(|gitignore| gitignore.outcome == Outcome::Wrote)
+        {
+            println!(".gitignore");
+        }
         return;
     }
 
@@ -119,8 +136,16 @@ pub fn install_report(fmt: Fmt, report: &InstallReport, check: bool) {
         println!("{:<11} {}", file.outcome.verb(), file.path);
     }
     println!("{:<11} project.godot", report.project_godot.verb());
+    if let Some(gitignore) = &report.gitignore {
+        println!(
+            "{:<11} {} ({})",
+            gitignore.outcome.verb(),
+            gitignore.path,
+            gitignore.entry
+        );
+    }
 
-    if changed && !check {
+    if report.plugin_changed() && !check {
         println!();
         println!("restart the Godot editor to load the plugin");
     }
@@ -420,7 +445,7 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
         "editor.select" => entries(data, "selection", ""),
         "editor.inspect" => scalar(data, "inspected").into_iter().collect(),
         "editor.main_screen" => scalar(data, "main_screen").into_iter().collect(),
-        "editor.screenshot" => scalar(data, "path").into_iter().collect(),
+        "editor.screenshot" | "game.screenshot" => scalar(data, "path").into_iter().collect(),
         "editor.play" => play_quiet(data),
         "editor.stop" => scalar(data, "playing").into_iter().collect(),
         "editor.toast" | "game.clear" => Vec::new(),
@@ -430,6 +455,10 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
         "game.get" | "game.set" | "game.eval" => scalar(data, "value_text").into_iter().collect(),
         "project.setting.get" => scalar(data, "value_text").into_iter().collect(),
         "project.autoload.list" => entries(data, "autoloads", "name"),
+        "project.plugins.list" => entries(data, "plugins", "name"),
+        "project.plugins.enable" | "project.plugins.disable" => {
+            scalar(data, "name").into_iter().collect()
+        }
         "fs.scan" => scalar(data, "started").into_iter().collect(),
         "fs.reimport" => scalar(data, "queued").into_iter().collect(),
         "script.check" => script_check_quiet(data),
@@ -674,6 +703,57 @@ fn render_autoloads(data: &Value) {
         let suffix = if enabled { "" } else { " (disabled)" };
         println!("{name} -> {path}{suffix}");
     }
+}
+
+/// `project plugins list`: name, state, version and path in aligned columns.
+fn render_plugins(data: &Value) {
+    print_table(&["NAME", "STATE", "VERSION", "PATH"], &plugin_rows(data));
+}
+
+fn plugin_rows(data: &Value) -> Vec<Vec<String>> {
+    data.get("plugins")
+        .and_then(Value::as_array)
+        .map(|plugins| {
+            plugins
+                .iter()
+                .map(|plugin| {
+                    vec![
+                        plugin.get("name").map(cell).unwrap_or_default(),
+                        if plugin
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            "enabled".to_string()
+                        } else {
+                            "disabled".to_string()
+                        },
+                        plugin
+                            .get("version")
+                            .filter(|version| !version.is_null())
+                            .map(cell)
+                            .filter(|version| !version.is_empty())
+                            .unwrap_or_else(|| "-".to_string()),
+                        plugin.get("path").map(cell).unwrap_or_default(),
+                    ]
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `project plugins enable|disable`: `name: enabled|disabled`.
+fn render_plugin_toggle(data: &Value) {
+    println!("{}", plugin_toggle_line(data));
+}
+
+fn plugin_toggle_line(data: &Value) -> String {
+    let name = data.get("name").map(cell).unwrap_or_default();
+    let enabled = data
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    format!("{name}: {}", if enabled { "enabled" } else { "disabled" })
 }
 
 fn script_check_lines(data: &Value) -> Vec<String> {
@@ -1001,6 +1081,12 @@ fn preferred_keys(cmd: &str) -> &'static [&'static str] {
 }
 
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    for line in table_lines(headers, rows) {
+        println!("{line}");
+    }
+}
+
+fn table_lines(headers: &[&str], rows: &[Vec<String>]) -> Vec<String> {
     let mut widths: Vec<usize> = headers
         .iter()
         .map(|header| header.chars().count())
@@ -1013,6 +1099,7 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
         }
     }
 
+    let mut lines = Vec::with_capacity(rows.len() + 1);
     let mut line = String::new();
     for (index, header) in headers.iter().enumerate() {
         line.push_str(&format!("{header:<width$}", width = widths[index]));
@@ -1020,7 +1107,7 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
             line.push_str("  ");
         }
     }
-    println!("{}", line.trim_end());
+    lines.push(line.trim_end().to_string());
 
     for row in rows {
         let mut line = String::new();
@@ -1033,8 +1120,9 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
                 line.push_str("  ");
             }
         }
-        println!("{}", line.trim_end());
+        lines.push(line.trim_end().to_string());
     }
+    lines
 }
 
 fn yes_no(value: Option<bool>) -> String {
@@ -1264,6 +1352,64 @@ mod tests {
             Some("name      : position")
         );
         assert!(lines.contains(&"value_text: Vector2(3, 4)".to_string()));
+    }
+
+    #[test]
+    fn plugins_list_aligns_state_version_and_path() {
+        let data = json!({
+            "plugins": [
+                {
+                    "name": "alpha",
+                    "path": "res://addons/alpha",
+                    "enabled": true,
+                    "version": "1.2.3",
+                },
+                {
+                    "name": "a-longer-name",
+                    "path": "res://addons/a-longer-name",
+                    "enabled": false,
+                    "version": null,
+                },
+            ],
+        });
+        let lines = table_lines(&["NAME", "STATE", "VERSION", "PATH"], &plugin_rows(&data));
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            vec!["NAME", "STATE", "VERSION", "PATH"]
+        );
+        assert_eq!(
+            lines[1].split_whitespace().collect::<Vec<_>>(),
+            vec!["alpha", "enabled", "1.2.3", "res://addons/alpha"]
+        );
+        assert_eq!(
+            lines[2].split_whitespace().collect::<Vec<_>>(),
+            vec![
+                "a-longer-name",
+                "disabled",
+                "-",
+                "res://addons/a-longer-name"
+            ]
+        );
+
+        // The state and path columns start at the same offset in every row.
+        assert_eq!(lines[1].find("enabled"), lines[2].find("disabled"));
+        assert_eq!(
+            lines[1].find("res://addons/alpha"),
+            lines[2].find("res://addons/a-longer-name")
+        );
+    }
+
+    #[test]
+    fn plugin_toggle_line_reports_the_confirmed_state() {
+        assert_eq!(
+            plugin_toggle_line(&json!({"name": "alpha", "enabled": true})),
+            "alpha: enabled"
+        );
+        assert_eq!(
+            plugin_toggle_line(&json!({"name": "beta", "enabled": false})),
+            "beta: disabled"
+        );
     }
 
     #[test]
