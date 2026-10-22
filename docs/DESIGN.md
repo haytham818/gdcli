@@ -70,7 +70,12 @@ Not possible, and therefore not exposed:
 5. **Sending commands to the running game.** `EditorDebuggerSession.send_message` works,
    but the game needs an `EngineDebugger` capture registered — that is a runtime autoload,
    tracked as M4 (`gdcli runtime install`).
-6. **Command palette listing/execution.** `EditorCommandPalette` exposes only
+6. **Reading a local game's stdout.** On 4.7.2 the debugger only carries `game_view:*`
+   messages; the game's `print()` goes to the editor console, so `game.logs` stays empty
+   unless a runtime autoload forwards it. Measured with `_capture` instrumented.
+7. **Switching built-in bottom panels.** Only panels owned by the plugin are addressable via
+   `EditorPlugin`; the rest would need UI-tree spelunking that breaks across versions.
+8. **Command palette listing/execution.** `EditorCommandPalette` exposes only
    `add_command`/`remove_command`; the plugin registers into it instead.
 
 Side effects to document for users: saving through the engine rewrites the scene header
@@ -87,7 +92,11 @@ the user's history as `gdcli: <cmd>`.
   `project autoload list/add/remove`, `fs status/scan/reimport` (+ `--wait` polling),
   `script check/open/files/save-all`. Input-map editing moved to M3: binding an
   `InputEvent` needs its own serialization design, not a passthrough.
-* **M3** — editor UI operations, screenshots, play/stop, read-only game state.
+* **M3** (shipped, plugin 0.4.0) — `editor select/inspect/main-screen/toast/screenshot/
+  play/stop`, play `--wait`, `game status/logs`. Screenshots need a real renderer: headless
+  returns `NO_API`, `xvfb-run -a -s "-screen 0 1600x1000x24" godot --editor ...` produces
+  real 1844x1189 sub-viewport and 2560x1398 whole-window PNGs. Game *output* is not
+  observable on 4.7 (see below).
 * **M4** — optional runtime autoload for game-side writes.
 
 ## Conventions

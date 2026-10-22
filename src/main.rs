@@ -117,6 +117,11 @@ enum Command {
         #[command(subcommand)]
         command: ScriptCommand,
     },
+    /// The running game's debug sessions and logs
+    Game {
+        #[command(subcommand)]
+        command: GameCommand,
+    },
     /// Send a raw protocol command
     Raw {
         /// Protocol command name, e.g. meta.capabilities
@@ -165,6 +170,54 @@ enum EditorCommand {
         #[arg(long, default_value_t = 20, value_name = "N")]
         limit: i64,
     },
+    /// Select one or more nodes in the editor
+    Select {
+        /// Node addresses
+        #[arg(required = true, num_args = 1.., value_name = "PATH")]
+        paths: Vec<String>,
+        /// Add to the current selection instead of replacing it
+        #[arg(long)]
+        add: bool,
+    },
+    /// Open a node in the inspector
+    Inspect {
+        /// Node address
+        target: String,
+    },
+    /// Switch the editor's main screen
+    MainScreen {
+        /// Main screen to show
+        #[arg(value_enum, value_name = "SCREEN")]
+        screen: MainScreen,
+    },
+    /// Show a toast notification in the editor
+    Toast {
+        /// Message to show
+        message: String,
+    },
+    /// Save a screenshot of the editor viewport
+    Screenshot {
+        /// Output PNG path; parent directories are created
+        #[arg(long, value_name = "PATH")]
+        out: PathBuf,
+        /// Which viewport to capture
+        #[arg(long, value_enum, default_value = "whole", value_name = "VIEW")]
+        viewport: Viewport,
+    },
+    /// Start playing the project
+    Play {
+        /// What to play
+        #[arg(long, value_enum, default_value = "main", value_name = "MODE")]
+        mode: PlayMode,
+        /// Scene to play; requires --mode scene
+        #[arg(long, value_name = "RES")]
+        scene: Option<String>,
+        /// Wait until the editor reports playing
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Stop the running game
+    Stop,
 }
 
 #[derive(Debug, Subcommand)]
@@ -494,6 +547,23 @@ enum ScriptCommand {
     SaveAll,
 }
 
+#[derive(Debug, Subcommand)]
+enum GameCommand {
+    /// Report debug session count and activity
+    Status,
+    /// Print captured game output and errors
+    Logs {
+        /// Maximum number of entries to show
+        #[arg(long, default_value_t = 200, value_name = "N")]
+        limit: i64,
+        /// Clear the captured log afterwards
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Clear the captured log
+    Clear,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ValueAs {
     /// Godot literal, the inverse of var_to_str
@@ -513,6 +583,63 @@ impl ValueAs {
             ValueAs::Json => "json",
             ValueAs::Ref => "ref",
             ValueAs::Expr => "expr",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum MainScreen {
+    #[value(name = "2d")]
+    TwoD,
+    #[value(name = "3d")]
+    ThreeD,
+    Script,
+    Assetlib,
+}
+
+impl MainScreen {
+    fn as_str(self) -> &'static str {
+        match self {
+            MainScreen::TwoD => "2d",
+            MainScreen::ThreeD => "3d",
+            MainScreen::Script => "script",
+            MainScreen::Assetlib => "assetlib",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Viewport {
+    #[value(name = "2d")]
+    TwoD,
+    #[value(name = "3d")]
+    ThreeD,
+    Whole,
+}
+
+impl Viewport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Viewport::TwoD => "2d",
+            Viewport::ThreeD => "3d",
+            Viewport::Whole => "whole",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlayMode {
+    Main,
+    Current,
+    Scene,
+}
+
+impl PlayMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            PlayMode::Main => "main",
+            PlayMode::Current => "current",
+            PlayMode::Scene => "scene",
         }
     }
 }
@@ -593,15 +720,36 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
             let data = client.call_raw(&raw.cmd, &raw.args, opts)?;
             output::render(format, "raw", &raw.args, &data)
         }
-        Command::Editor { command } => {
-            let call = match command {
-                EditorCommand::Status => commands::editor::status(),
-                EditorCommand::Undo { count } => commands::editor::undo(*count),
-                EditorCommand::Redo { count } => commands::editor::redo(*count),
-                EditorCommand::History { limit } => commands::editor::history(*limit)?,
-            };
-            execute(&project, call, format, opts)
-        }
+        Command::Editor { command } => match command {
+            EditorCommand::Play { mode, scene, wait } => {
+                let call = commands::editor::play(mode.as_str(), scene.as_deref())?;
+                if *wait {
+                    execute_playing(&project, call, format, opts)
+                } else {
+                    execute(&project, call, format, opts)
+                }
+            }
+            _ => {
+                let call = match command {
+                    EditorCommand::Status => commands::editor::status(),
+                    EditorCommand::Undo { count } => commands::editor::undo(*count),
+                    EditorCommand::Redo { count } => commands::editor::redo(*count),
+                    EditorCommand::History { limit } => commands::editor::history(*limit)?,
+                    EditorCommand::Select { paths, add } => commands::editor::select(paths, *add),
+                    EditorCommand::Inspect { target } => commands::editor::inspect(target),
+                    EditorCommand::MainScreen { screen } => {
+                        commands::editor::main_screen(screen.as_str())
+                    }
+                    EditorCommand::Toast { message } => commands::editor::toast(message),
+                    EditorCommand::Screenshot { out, viewport } => {
+                        commands::editor::screenshot(viewport.as_str(), out)?
+                    }
+                    EditorCommand::Play { .. } => unreachable!("play is handled above"),
+                    EditorCommand::Stop => commands::editor::stop(),
+                };
+                execute(&project, call, format, opts)
+            }
+        },
         Command::Scene { command } => {
             let call = match command {
                 SceneCommand::Open { res } => commands::scene::open(res),
@@ -737,6 +885,14 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
             };
             execute(&project, call, format, opts)
         }
+        Command::Game { command } => {
+            let call = match command {
+                GameCommand::Status => commands::game::status(),
+                GameCommand::Logs { limit, clear } => commands::game::logs(*limit, *clear)?,
+                GameCommand::Clear => commands::game::clear(),
+            };
+            execute(&project, call, format, opts)
+        }
     }
 }
 
@@ -760,6 +916,22 @@ fn execute_waiting(project: &Path, call: Call, format: Fmt, opts: Opts) -> Resul
         call.opts(opts.undo.unwrap_or(true), opts.dry_run),
     )?;
     commands::fs::wait(&mut client)?;
+    output::render(format, &call.cmd, &call.args, &data)
+}
+
+/// Sends `editor.play`, waits for the editor to report playing, then renders the
+/// response with the confirmed state.
+fn execute_playing(project: &Path, call: Call, format: Fmt, opts: Opts) -> Result<()> {
+    let mut client = Client::connect(project)?;
+    let mut data = client.call(
+        &call.cmd,
+        &call.args,
+        call.opts(opts.undo.unwrap_or(true), opts.dry_run),
+    )?;
+    commands::editor::wait(&mut client)?;
+    if let Some(object) = data.as_object_mut() {
+        object.insert("playing".to_string(), serde_json::Value::Bool(true));
+    }
     output::render(format, &call.cmd, &call.args, &data)
 }
 
@@ -835,5 +1007,163 @@ mod tests {
             panic!("expected script open");
         };
         assert_eq!(line, 0);
+    }
+
+    #[test]
+    fn editor_select_takes_one_or_more_paths() {
+        let cli = Cli::try_parse_from(["gdcli", "editor", "select", "Main", "Main/Inst", "--add"])
+            .expect("parse editor select");
+        let Command::Editor {
+            command: EditorCommand::Select { paths, add },
+        } = cli.command
+        else {
+            panic!("expected editor select");
+        };
+        assert_eq!(paths, vec!["Main".to_string(), "Main/Inst".to_string()]);
+        assert!(add);
+
+        assert!(Cli::try_parse_from(["gdcli", "editor", "select"]).is_err());
+    }
+
+    #[test]
+    fn editor_inspect_main_screen_and_toast_parse() {
+        let cli = Cli::try_parse_from(["gdcli", "editor", "inspect", "Inst"]).expect("inspect");
+        assert!(matches!(
+            cli.command,
+            Command::Editor {
+                command: EditorCommand::Inspect { .. }
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["gdcli", "editor", "main-screen", "3d"]).expect("screen");
+        let Command::Editor {
+            command: EditorCommand::MainScreen { screen },
+        } = cli.command
+        else {
+            panic!("expected editor main-screen");
+        };
+        assert_eq!(screen.as_str(), "3d");
+
+        let cli = Cli::try_parse_from(["gdcli", "editor", "toast", "hello"]).expect("toast");
+        let Command::Editor {
+            command: EditorCommand::Toast { message },
+        } = cli.command
+        else {
+            panic!("expected editor toast");
+        };
+        assert_eq!(message, "hello");
+
+        assert!(Cli::try_parse_from(["gdcli", "editor", "main-screen", "bogus"]).is_err());
+    }
+
+    #[test]
+    fn editor_screenshot_needs_out_and_defaults_to_the_whole_window() {
+        let cli = Cli::try_parse_from(["gdcli", "editor", "screenshot", "--out", "shot.png"])
+            .expect("parse screenshot");
+        let Command::Editor {
+            command: EditorCommand::Screenshot { out, viewport },
+        } = cli.command
+        else {
+            panic!("expected editor screenshot");
+        };
+        assert_eq!(out, PathBuf::from("shot.png"));
+        assert_eq!(viewport.as_str(), "whole");
+
+        assert!(Cli::try_parse_from(["gdcli", "editor", "screenshot"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "gdcli",
+                "editor",
+                "screenshot",
+                "--out",
+                "shot.png",
+                "--viewport",
+                "ui",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn editor_play_defaults_to_main_without_waiting() {
+        let cli = Cli::try_parse_from(["gdcli", "editor", "play"]).expect("parse play");
+        let Command::Editor {
+            command: EditorCommand::Play { mode, scene, wait },
+        } = cli.command
+        else {
+            panic!("expected editor play");
+        };
+        assert_eq!(mode.as_str(), "main");
+        assert!(scene.is_none());
+        assert!(!wait);
+
+        let cli = Cli::try_parse_from([
+            "gdcli",
+            "editor",
+            "play",
+            "--mode",
+            "scene",
+            "--scene",
+            "res://main.tscn",
+            "--wait",
+        ])
+        .expect("parse scene play");
+        let Command::Editor {
+            command: EditorCommand::Play { mode, scene, wait },
+        } = cli.command
+        else {
+            panic!("expected editor play");
+        };
+        assert_eq!(mode.as_str(), "scene");
+        assert_eq!(scene.as_deref(), Some("res://main.tscn"));
+        assert!(wait);
+    }
+
+    #[test]
+    fn editor_stop_and_game_commands_parse() {
+        let cli = Cli::try_parse_from(["gdcli", "editor", "stop"]).expect("parse stop");
+        assert!(matches!(
+            cli.command,
+            Command::Editor {
+                command: EditorCommand::Stop
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["gdcli", "game", "status"]).expect("parse game status");
+        assert!(matches!(
+            cli.command,
+            Command::Game {
+                command: GameCommand::Status
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["gdcli", "game", "logs"]).expect("parse game logs");
+        let Command::Game {
+            command: GameCommand::Logs { limit, clear },
+        } = cli.command
+        else {
+            panic!("expected game logs");
+        };
+        assert_eq!(limit, 200);
+        assert!(!clear);
+
+        let cli = Cli::try_parse_from(["gdcli", "game", "logs", "--limit", "10", "--clear"])
+            .expect("parse game logs");
+        let Command::Game {
+            command: GameCommand::Logs { limit, clear },
+        } = cli.command
+        else {
+            panic!("expected game logs");
+        };
+        assert_eq!(limit, 10);
+        assert!(clear);
+
+        let cli = Cli::try_parse_from(["gdcli", "game", "clear"]).expect("parse game clear");
+        assert!(matches!(
+            cli.command,
+            Command::Game {
+                command: GameCommand::Clear
+            }
+        ));
     }
 }

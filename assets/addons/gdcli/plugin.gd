@@ -6,7 +6,7 @@ extends EditorPlugin
 # editor down, because that takes the user's unsaved work with it.
 
 const PROTOCOL := 1
-const PLUGIN_VERSION := "0.3.0"
+const PLUGIN_VERSION := "0.4.0"
 const MAX_LINE := 1 << 20
 const OPEN_TIMEOUT_FRAMES := 120
 
@@ -24,11 +24,14 @@ const ResCommands = preload("commands/res.gd")
 const ProjectCommands = preload("commands/project.gd")
 const FsCommands = preload("commands/fs.gd")
 const ScriptCommands = preload("commands/script.gd")
+const GameCommands = preload("commands/game.gd")
+const DebugCapture = preload("debug_capture.gd")
 
 var _registry: Dictionary = {}
 var _server: TCPServer = null
 var _port: int = 0
 var _token: String = ""
+var debug_capture: EditorDebuggerPlugin = null
 # Each client: {"peer": StreamPeerTCP, "buf": PackedByteArray, "authed": bool, "pending": Dictionary}
 var _clients: Array = []
 
@@ -37,8 +40,10 @@ func _enter_tree() -> void:
 	_registry = {}
 	for module in [Meta, EditorCommands, SceneCommands, NodeCommands, PropCommands,
 			SignalCommands, GroupCommands, ResCommands, ProjectCommands, FsCommands,
-			ScriptCommands]:
+			ScriptCommands, GameCommands]:
 		module.register(_registry)
+	debug_capture = DebugCapture.new() as EditorDebuggerPlugin
+	add_debugger_plugin(debug_capture)
 	_token = Crypto.new().generate_random_bytes(32).hex_encode()
 	_start_server()
 	_write_endpoint()
@@ -47,6 +52,9 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	set_process(false)
+	if debug_capture != null:
+		remove_debugger_plugin(debug_capture)
+		debug_capture = null
 	for client in _clients:
 		var peer: StreamPeerTCP = client["peer"]
 		if peer != null:
@@ -265,24 +273,39 @@ func _dispatch(client: Dictionary, cmd: String, args: Dictionary, opts: Dictiona
 	return _reply(id, has_id, result)
 
 
-# open_scene_from_path() returns void, so scene.open defers its reply until the
-# edited root actually points at the requested scene.
+# Some engine calls return void and only take effect a frame later (scene.open,
+# screenshots after a main-screen switch, play). Commands hand back a
+# {"__pending": {...}} marker; the plugin polls it once per frame and answers
+# the client when it resolves, so the editor main thread never blocks.
 func _advance_pending(client: Dictionary) -> bool:
 	var pending: Dictionary = client["pending"]
 	pending["frames"] = int(pending["frames"]) + 1
+	var reply := {}
+	match String(pending.get("kind", "scene_open")):
+		"screenshot":
+			reply = EditorCommands.poll_screenshot(pending)
+		"play":
+			reply = EditorCommands.poll_play(pending)
+		_:
+			reply = _poll_scene_open(pending)
+	if reply.is_empty():
+		return false
+	_send(client, _reply(pending["id"], pending["has_id"], reply))
+	client["pending"] = {}
+	return true
+
+
+# open_scene_from_path() returns void, so scene.open defers its reply until the
+# edited root actually points at the requested scene.
+func _poll_scene_open(pending: Dictionary) -> Dictionary:
 	var want := String(pending["path"])
 	var root := EditorInterface.get_edited_scene_root()
 	if root != null and ProjectSettings.localize_path(root.scene_file_path) == want:
-		_send(client, _reply(pending["id"], pending["has_id"], Meta.ok({"path": want})))
-		client["pending"] = {}
-		return true
+		return Meta.ok({"path": want})
 	if int(pending["frames"]) >= OPEN_TIMEOUT_FRAMES:
-		_send(client, _reply(pending["id"], pending["has_id"],
-			Meta.err("GODOT_ERROR", "timed out waiting for '%s' to open" % want,
-				"check that the scene loads without errors")))
-		client["pending"] = {}
-		return true
-	return false
+		return Meta.err("GODOT_ERROR", "timed out waiting for '%s' to open" % want,
+			"check that the scene loads without errors")
+	return {}
 
 
 # --- wire helpers ------------------------------------------------------------

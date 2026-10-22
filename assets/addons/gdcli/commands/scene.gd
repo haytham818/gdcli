@@ -56,7 +56,7 @@ static func _open(args: Dictionary, opts: Dictionary) -> Dictionary:
 	# open_scene_from_path() returns void: the plugin polls for up to 120 frames
 	# before answering, see plugin.gd::_advance_pending().
 	EditorInterface.open_scene_from_path(path)
-	return {"__pending": {"path": path}}
+	return {"__pending": {"kind": "scene_open", "path": path}}
 
 
 static func _save(_args: Dictionary, opts: Dictionary) -> Dictionary:

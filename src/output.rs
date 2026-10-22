@@ -30,6 +30,9 @@ pub fn render(fmt: Fmt, cmd: &str, args: &Value, data: &Value) -> Result<()> {
         "prop.list" => render_prop_list(data),
         "editor.undo" | "editor.redo" => render_history_action(cmd, data),
         "editor.history" => render_history(data),
+        "editor.play" | "editor.stop" => render_playing(cmd, data),
+        "editor.screenshot" => render_screenshot(data),
+        "game.logs" => print_lines(&game_log_lines(data)),
         "signal.list" => print_lines(&signal_lines(data)),
         "group.list" => render_group_list(data),
         "script.check" => print_lines(&script_check_lines(data)),
@@ -236,6 +239,16 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
         "group.list" => entries(data, "groups", ""),
         "group.add" | "group.remove" => args.get("group").map(cell).into_iter().collect(),
         "signal.connect" | "signal.disconnect" => connected_method(data).into_iter().collect(),
+        "editor.status" => scalar(data, "edited_scene").into_iter().collect(),
+        "editor.select" => entries(data, "selection", ""),
+        "editor.inspect" => scalar(data, "inspected").into_iter().collect(),
+        "editor.main_screen" => scalar(data, "main_screen").into_iter().collect(),
+        "editor.screenshot" => scalar(data, "path").into_iter().collect(),
+        "editor.play" => play_quiet(data),
+        "editor.stop" => scalar(data, "playing").into_iter().collect(),
+        "editor.toast" | "game.clear" => Vec::new(),
+        "game.status" => scalar(data, "sessions").into_iter().collect(),
+        "game.logs" => game_log_texts(data),
         "project.setting.get" => scalar(data, "value_text").into_iter().collect(),
         "project.autoload.list" => entries(data, "autoloads", "name"),
         "fs.scan" => scalar(data, "started").into_iter().collect(),
@@ -251,6 +264,13 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
 
 fn scalar(data: &Value, key: &str) -> Option<String> {
     data.get(key).filter(|value| !value.is_null()).map(cell)
+}
+
+fn play_quiet(data: &Value) -> Vec<String> {
+    if let Some(scene) = scalar(data, "scene") {
+        return vec![scene];
+    }
+    data.get("playing").map(cell).into_iter().collect()
 }
 
 fn connected_method(data: &Value) -> Option<String> {
@@ -629,13 +649,80 @@ fn plural(count: i64, noun: &str) -> String {
     }
 }
 
-fn render_object(cmd: &str, data: &Value) {
-    let Some(object) = data.as_object() else {
-        println!("{}", cell(data));
+/// `editor play` / `editor stop`: a one-line account of the play state.
+fn render_playing(cmd: &str, data: &Value) {
+    if cmd == "editor.stop" {
+        println!("stopped");
         return;
+    }
+    let playing = data
+        .get("playing")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match (playing, data.get("scene").and_then(Value::as_str)) {
+        (true, Some(scene)) => println!("playing {scene}"),
+        (true, None) => println!("playing"),
+        (false, _) => println!("not playing"),
+    }
+}
+
+/// The image itself never crosses the wire; only its path and dimensions do.
+fn render_screenshot(data: &Value) {
+    let path = data.get("path").and_then(Value::as_str).unwrap_or("");
+    let width = data.get("width").and_then(Value::as_i64).unwrap_or(0);
+    let height = data.get("height").and_then(Value::as_i64).unwrap_or(0);
+    println!("{path} ({width}x{height})");
+}
+
+/// One line per log entry: `<session> <kind> | <text>`, in arrival order.
+fn game_log_lines(data: &Value) -> Vec<String> {
+    let Some(lines) = data.get("lines").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if lines.is_empty() {
+        return vec![
+            "no debugger messages captured: Godot 4.7 prints game output to the editor console"
+                .to_string(),
+        ];
+    }
+    lines
+        .iter()
+        .map(|entry| {
+            let session = entry.get("session").and_then(Value::as_i64).unwrap_or(0);
+            let kind = entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("output");
+            let text = entry.get("text").map(cell).unwrap_or_default();
+            format!("{session} {kind} | {text}")
+        })
+        .collect()
+}
+
+fn game_log_texts(data: &Value) -> Vec<String> {
+    data.get("lines")
+        .and_then(Value::as_array)
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|entry| entry.get("text").map(cell).unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn render_object(cmd: &str, data: &Value) {
+    for line in object_lines(cmd, data) {
+        println!("{line}");
+    }
+}
+
+fn object_lines(cmd: &str, data: &Value) -> Vec<String> {
+    let Some(object) = data.as_object() else {
+        return vec![cell(data)];
     };
     if object.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let order = preferred_keys(cmd);
@@ -654,17 +741,19 @@ fn render_object(cmd: &str, data: &Value) {
         .map(|key| key.chars().count())
         .max()
         .unwrap_or(0);
+    let mut lines = Vec::new();
     for key in keys {
         let Some(value) = object.get(key) else {
             continue;
         };
         let rendered = cell(value);
         if rendered.is_empty() {
-            println!("{key}:");
+            lines.push(format!("{key}:"));
         } else {
-            println!("{key:<width$}: {rendered}", width = width);
+            lines.push(format!("{key:<width$}: {rendered}", width = width));
         }
     }
+    lines
 }
 
 fn preferred_keys(cmd: &str) -> &'static [&'static str] {
@@ -675,6 +764,9 @@ fn preferred_keys(cmd: &str) -> &'static [&'static str] {
             "edited_scene",
             "open_scenes",
             "unsaved",
+            "main_screen",
+            "selection",
+            "inspected",
             "playing",
             "playing_scene",
         ],
@@ -696,6 +788,13 @@ fn preferred_keys(cmd: &str) -> &'static [&'static str] {
         "project.autoload.add" => &["name", "path"],
         "signal.connect" | "signal.disconnect" => &["source", "signal", "to", "method"],
         "group.add" | "group.remove" => &["target", "groups"],
+        "editor.select" => &["selection"],
+        "editor.inspect" => &["inspected"],
+        "editor.main_screen" => &["main_screen"],
+        "editor.screenshot" => &["path", "width", "height"],
+        "editor.play" => &["playing", "scene"],
+        "editor.stop" => &["playing"],
+        "game.status" => &["sessions", "active"],
         "fs.status" => &["scanning", "progress", "importing"],
         "script.save_all" => &["saved"],
         _ => &["path", "type", "project", "name", "value_text"],
@@ -763,6 +862,79 @@ fn cell(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_status_lists_the_m3_state_in_order() {
+        let data = json!({
+            "project": "/p",
+            "godot": "4.7.2-stable",
+            "edited_scene": "res://main.tscn",
+            "open_scenes": ["res://main.tscn"],
+            "unsaved": [],
+            "main_screen": "2d",
+            "selection": ["Main", "Inst"],
+            "inspected": "Inst",
+            "playing": true,
+            "playing_scene": "res://main.tscn",
+        });
+
+        let lines = object_lines("editor.status", &data);
+        let keys: Vec<&str> = lines
+            .iter()
+            .map(|line| line.split(':').next().unwrap_or("").trim_end())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "project",
+                "godot",
+                "edited_scene",
+                "open_scenes",
+                "unsaved",
+                "main_screen",
+                "selection",
+                "inspected",
+                "playing",
+                "playing_scene",
+            ]
+        );
+
+        let value = |key: &str| {
+            lines
+                .iter()
+                .find(|line| line.split(':').next().unwrap_or("").trim_end() == key)
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_string())
+                .unwrap()
+        };
+        assert_eq!(value("main_screen"), "2d");
+        assert_eq!(value("selection"), "Main, Inst");
+        assert_eq!(value("inspected"), "Inst");
+    }
+
+    #[test]
+    fn game_logs_render_session_kind_and_text() {
+        let data = json!({
+            "lines": [
+                {"kind": "output", "session": 0, "text": "ready"},
+                {"kind": "error", "session": 1, "text": "boom"},
+            ],
+        });
+        assert_eq!(
+            game_log_lines(&data),
+            vec!["0 output | ready", "1 error | boom"]
+        );
+        assert_eq!(game_log_texts(&data), vec!["ready", "boom"]);
+
+        assert_eq!(
+            game_log_lines(&json!({"lines": []})),
+            vec![
+                "no debugger messages captured: Godot 4.7 prints game output to the editor console"
+            ]
+        );
+        assert!(game_log_lines(&json!({})).is_empty());
+        assert!(game_log_texts(&json!({})).is_empty());
+    }
 
     #[test]
     fn history_marks_the_current_action_and_right_aligns_indexes() {

@@ -302,3 +302,62 @@ Scanning is asynchronous and never blocks the editor main thread. `gdcli --wait`
 `check` is load-based (`ResourceLoader.load` with `CACHE_MODE_IGNORE`): it reports whether a
 script parses, not where. Print the editor's error panel / use `godot --check-only` for
 column-level detail.
+
+## 10. Commands (M3, plugin 0.4.0)
+
+### editor (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `editor.select` | `{"paths":[str],"add":bool=false}` | `{"selection":[str]}` |
+| `editor.inspect` | `{"target"}` | `{"inspected":str}` |
+| `editor.main_screen` | `{"name":"2d"\|"3d"\|"script"\|"assetlib"}` | `{"main_screen":str}` |
+| `editor.toast` | `{"message"}` | `{}` |
+| `editor.screenshot` | `{"viewport":"2d"\|"3d"\|"whole","path"}` | `{"path","width","height"}` |
+| `editor.play` | `{"mode":"main"\|"current"\|"scene","scene"?}` | `{"playing":bool,"scene":str?}` |
+| `editor.stop` | — | `{"playing":false}` |
+
+`editor.status` gains `main_screen`, `selection` (`[str]`) and `inspected` (`str?`).
+
+Main-screen names: `2d`, `3d`, `script`, `assetlib` (mapped to the editor's `Asset Store` on
+4.7), and `game` may come back from `status` when the user sits on the game view even though
+it is not a valid input name. The readback walks the main-screen container for the visible
+child, because it is wrapped in `WindowWrapper` on 4.7.
+
+Screenshot rules, all verified on 4.7.2:
+
+* `viewport: "whole"` captures the whole editor window:
+  `EditorInterface.get_base_control().get_viewport().get_texture().get_image()`.
+* `viewport: "2d"|"3d"` must first call `EditorInterface.set_main_screen_editor(...)` and then
+  wait **two rendered frames** before reading `get_editor_viewport_2d/3d().get_texture()`.
+  Reading immediately after the switch yields a 2×2 placeholder.
+* The plugin writes the PNG itself (`Image.save_png`) and returns its dimensions; image bytes
+  are never sent over the protocol. `path` may be absolute or project-relative.
+* `dry_run` validates the request and returns `planned` without `width`/`height`, since
+  nothing was rendered.
+* Under a dummy renderer (`--headless`) there is no texture: return `NO_API` with a hint
+  pointing at a real display or xvfb. Never return an empty image.
+
+`editor.play` returns as soon as the editor reports playing; `gdcli --wait` polls
+`editor.status` every 200 ms up to 30 s. `editor.stop` is idempotent.
+
+### game
+
+| cmd | args | data |
+| --- | --- | --- |
+| `game.status` | — | `{"sessions":int,"active":bool}` |
+| `game.logs` | `{"limit":int=200,"clear":bool=false}` | `{"lines":[{"kind":"output"\|"error","text","session":int}]}` |
+| `game.clear` | — | `{}` |
+
+The plugin registers an `EditorDebuggerPlugin` and keeps a ring buffer (last 500 entries) fed
+by `_capture`. `game.logs` with no debug session is `{"lines":[]}`, not an error.
+
+Known engine behaviour (measured on 4.7.2, `_capture` instrumented): the debugger delivers
+only `game_view:*` messages. A locally launched game's `print()` and runtime errors go to the
+editor's stdout/console and **never** arrive as `output`/`error`/`stack_dump` messages, so
+`game.logs` is empty for local runs. The capture code stays because the protocol is still
+correct for engines/sessions that do send them; do not read "empty" as "the game printed
+nothing". Getting real game output needs a runtime autoload or an owned stdout pipe (M4).
+
+Out of scope for M3: switching built-in bottom panels (no API; only panels owned by the
+plugin are addressable) and the remote scene tree.

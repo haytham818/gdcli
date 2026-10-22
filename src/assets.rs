@@ -16,6 +16,10 @@ pub const FILES: &[Asset] = &[
         content: include_str!("../assets/addons/gdcli/plugin.gd"),
     },
     Asset {
+        path: "addons/gdcli/debug_capture.gd",
+        content: include_str!("../assets/addons/gdcli/debug_capture.gd"),
+    },
+    Asset {
         path: "addons/gdcli/commands/meta.gd",
         content: include_str!("../assets/addons/gdcli/commands/meta.gd"),
     },
@@ -58,6 +62,10 @@ pub const FILES: &[Asset] = &[
     Asset {
         path: "addons/gdcli/commands/script.gd",
         content: include_str!("../assets/addons/gdcli/commands/script.gd"),
+    },
+    Asset {
+        path: "addons/gdcli/commands/game.gd",
+        content: include_str!("../assets/addons/gdcli/commands/game.gd"),
     },
 ];
 
@@ -102,6 +110,8 @@ mod tests {
         let paths: Vec<_> = FILES.iter().map(|asset| asset.path).collect();
         assert!(paths.contains(&"addons/gdcli/plugin.cfg"));
         assert!(paths.contains(&"addons/gdcli/plugin.gd"));
+        assert!(paths.contains(&"addons/gdcli/debug_capture.gd"));
+        assert!(paths.contains(&"addons/gdcli/commands/game.gd"));
         assert!(paths.contains(&"addons/gdcli/commands/node.gd"));
         for path in [
             "addons/gdcli/commands/signal.gd",

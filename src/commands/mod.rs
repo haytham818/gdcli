@@ -3,6 +3,7 @@
 pub mod batch;
 pub mod editor;
 pub mod fs;
+pub mod game;
 pub mod group;
 pub mod node;
 pub mod plugin;
@@ -19,6 +20,7 @@ use serde_json::Value;
 use crate::client::Opts;
 
 /// One wire request plus whether the undo/dry-run options apply to it.
+#[derive(Debug)]
 pub struct Call {
     pub cmd: String,
     pub args: Value,

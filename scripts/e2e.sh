@@ -200,5 +200,60 @@ step "save-as + roots + reload"
 "$BIN" scene tree --project "$WORK" --quiet | sed 's/^/    /'
 grep -q 'instance=ExtResource' "$WORK/copies/main2.tscn" || fail "save-as flattened the instance"
 
+step "M3: ui state, play/stop, game read-only"
+"$BIN" editor select Inst --project "$WORK" | sed 's/^/    /'
+"$BIN" editor select Inst Btn --add --project "$WORK" | sed 's/^/    /'
+"$BIN" editor inspect Inst --project "$WORK" | sed 's/^/    /'
+"$BIN" editor main-screen 3d --project "$WORK" | sed 's/^/    /'
+"$BIN" editor toast "gdcli e2e" --project "$WORK" | sed 's/^/    /'
+"$BIN" editor status --project "$WORK" | sed 's/^/    /'
+"$BIN" editor play --wait --project "$WORK" | sed 's/^/    /'
+PLAYING="$("$BIN" editor status --project "$WORK" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["playing"])')"
+[[ "$PLAYING" == "True" || "$PLAYING" == "true" ]] || fail "play --wait left playing=$PLAYING"
+"$BIN" game status --project "$WORK" | sed 's/^/    /'
+"$BIN" game logs --limit 5 --project "$WORK" | sed 's/^/    /'
+"$BIN" editor stop --project "$WORK" | sed 's/^/    /'
+
+set +e
+"$BIN" editor screenshot --out "$WORK/should-not-exist.png" --viewport 2d --project "$WORK" >/dev/null 2>"$WORK/shot-err.txt"
+CODE=$?
+set -e
+[[ $CODE -eq 3 ]] || fail "screenshot on a dummy renderer should exit 3, got $CODE"
+[[ ! -f "$WORK/should-not-exist.png" ]] || fail "screenshot wrote a file on a dummy renderer"
+grep -qi "display\|xvfb\|headless" "$WORK/shot-err.txt" || fail "screenshot error has no display hint: $(cat "$WORK/shot-err.txt")"
+
+if [[ "${E2E_GUI:-0}" == "1" ]]; then
+	step "M3 GUI (xvfb): screenshots, play, game logs"
+	GW="$WORK/gui"
+	rm -rf "$GW"; mkdir -p "$GW"
+	cp "$REPO"/tests/fixture/project.godot "$REPO"/tests/fixture/*.tscn "$REPO"/tests/fixture/*.gd "$GW"/
+	"$BIN" plugin install --project "$GW" >/dev/null
+	xvfb-run -a -s "-screen 0 1600x1000x24" "$GODOT" --editor --path "$GW" res://main.tscn >"$GW/editor.log" 2>&1 &
+	GUI_PID=$!
+	trap 'kill "$EDITOR_PID" "$GUI_PID" 2>/dev/null || true; pkill -f "$GW" 2>/dev/null || true' EXIT
+	for _ in $(seq 1 120); do
+		[[ -f "$GW/.godot/gdcli/endpoint.json" ]] && break
+		sleep 0.5
+	done
+	[[ -f "$GW/.godot/gdcli/endpoint.json" ]] || { tail -20 "$GW/editor.log"; fail "xvfb editor never came up"; }
+
+	"$BIN" editor screenshot --out "$GW/shot2d.png" --viewport 2d --project "$GW" | sed 's/^/    /'
+	"$BIN" editor screenshot --out "$GW/shot3d.png" --viewport 3d --project "$GW" | sed 's/^/    /'
+	"$BIN" editor screenshot --out "$GW/whole.png" --viewport whole --project "$GW" | sed 's/^/    /'
+	python3 - "$GW" <<'PY'
+import struct, sys, pathlib
+for name in ("shot2d.png", "shot3d.png", "whole.png"):
+    data = pathlib.Path(sys.argv[1], name).read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", name
+    w, h = struct.unpack(">II", data[16:24])
+    assert w > 100 and h > 100, (name, w, h)
+    print("    %s %dx%d ok" % (name, w, h))
+PY
+	"$BIN" editor play --wait --project "$GW" | sed 's/^/    /'
+	sleep 4
+	"$BIN" game logs --limit 10 --project "$GW" | sed 's/^/    /'
+	"$BIN" editor stop --project "$GW" | sed 's/^/    /'
+fi
+
 echo
 echo "PASS"
