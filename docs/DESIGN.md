@@ -97,6 +97,10 @@ the user's history as `gdcli: <cmd>`.
   returns `NO_API`, `xvfb-run -a -s "-screen 0 1600x1000x24" godot --editor ...` produces
   real 1844x1189 sub-viewport and 2560x1398 whole-window PNGs. Game *output* is not
   observable on 4.7 (see below).
+* **M7** (shipped, plugin 0.8.0) — `game logs` captures the game's own `print`/`printerr`/
+  `push_error`/`push_warning` stream through a `Logger` installed by the runtime autoload,
+  since 4.7's debugger carries none of it. `Logger` + `OS.add_logger` is the mechanism;
+  entries are batched once per frame to avoid re-entering the engine's logging path.
 * **M6** (shipped, plugin 0.7.0) — `project input` (actions and key/mouse/joypad
   bindings) through a small event DSL; the engine owns `project.godot` serialization.
 * **M5** (shipped, plugin 0.6.0) — `project plugins list/enable/disable`,
@@ -104,6 +108,10 @@ the user's history as `gdcli: <cmd>`.
 * **M4** (shipped, plugin 0.5.0) — `runtime install/uninstall/status` and `game
   ping/tree/get/set/eval` over an `EngineDebugger` capture in the running game, with id
   correlation and a 3 s timeout in the editor. Opt-in: the autoload is a project file.
+
+  Tooling note: the editor's command-line scene argument races the first filesystem scan, so
+  a client that connects as soon as `endpoint.json` exists may see no edited scene yet —
+  `gdcli scene open` (or a retry) is the reliable path.
 
   Tooling note for GUI tests: run the editor with `WAYLAND_DISPLAY` unset and
   `--display-driver x11` under `xvfb-run`. With `WAYLAND_DISPLAY` inherited, the editor runs

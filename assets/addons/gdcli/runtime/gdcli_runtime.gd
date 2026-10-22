@@ -18,6 +18,12 @@ const CAPTURE := "gdcli"
 const SHOT_FRAMES := 2
 const NO_DISPLAY_HINT := "run the game with a display (not --headless), e.g. under xvfb-run"
 
+# PROTOCOL section 14: the game's own log stream, forwarded as `gdcli:log`.
+# Entries are batched per frame because sending from inside a logging callback
+# re-enters the engine's logger.
+const LOG_MESSAGE := "log"
+const MAX_PENDING := 500
+
 const DENY_PROPS := [
 	"script",
 	"resource_path",
@@ -30,6 +36,11 @@ const DENY_PROPS := [
 var _version := "unknown"
 var _registered := false
 var _class_props: Dictionary = {}
+# Log capture state; `_logger != null` is what `game.ping` reports as `capturing`.
+var _logger: Logger = null
+var _pending: Array = []
+var _marker: Dictionary = {}
+var _dropped := 0
 
 
 func _ready() -> void:
@@ -37,19 +48,80 @@ func _ready() -> void:
 	if not EngineDebugger.is_active():
 		return
 	var capture_name := StringName(CAPTURE)
-	if EngineDebugger.has_capture(capture_name):
-		return
-	EngineDebugger.register_message_capture(capture_name, _on_request)
-	_registered = true
+	if not EngineDebugger.has_capture(capture_name):
+		EngineDebugger.register_message_capture(capture_name, _on_request)
+		_registered = true
+	_install_logger()
+	# Keep flushing while the game pauses its own SceneTree.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	set_process(false)
 
 
 func _exit_tree() -> void:
+	# Send what is still buffered, then stop the capture: the engine keeps no
+	# reference to a removed logger.
+	_flush_log()
+	if _logger != null:
+		OS.remove_logger(_logger)
+		_logger = null
 	if not _registered:
 		return
 	_registered = false
 	var capture_name := StringName(CAPTURE)
 	if EngineDebugger.has_capture(capture_name):
 		EngineDebugger.unregister_message_capture(capture_name)
+
+
+# --- game log capture (PROTOCOL section 14) ---------------------------------
+
+func _install_logger() -> void:
+	if _logger != null or not ClassDB.class_exists("Logger"):
+		return
+	var sink := LogSink.new()
+	sink.sink = self
+	OS.add_logger(sink)
+	_logger = sink
+
+
+# One frame per flush, and only while something is buffered.
+func _process(_delta: float) -> void:
+	_flush_log()
+
+
+# Called by the logger for every `print`/`printerr`/`push_warning`/`push_error`.
+func _enqueue_log(kind: String, text: String) -> void:
+	if _pending.size() >= MAX_PENDING:
+		_dropped += 1
+		# Newest win: the marker, if any, stays first and the oldest real
+		# entry makes room for the new one.
+		_pending.remove_at(1 if not _marker.is_empty() else 0)
+		if _marker.is_empty():
+			# The marker needs a slot of its own too, so a full batch is still
+			# MAX_PENDING entries and survives the editor's equal-sized buffer.
+			_dropped += 1
+			_pending.remove_at(0)
+			_marker = {"kind": "warning", "text": ""}
+			_pending.push_front(_marker)
+	_pending.append({"kind": kind, "text": text})
+	if not is_processing():
+		set_process(true)
+
+
+func _flush_log() -> void:
+	set_process(false)
+	var entries: Array = _pending.duplicate()
+	if not _marker.is_empty():
+		_marker["text"] = "%d messages dropped" % _dropped
+		_dropped = 0
+	_pending.clear()
+	_marker = {}
+	if entries.is_empty():
+		return
+	if EngineDebugger.is_active():
+		EngineDebugger.send_message("%s:%s" % [CAPTURE, LOG_MESSAGE], [entries])
+	# Sending can log again (engine errors), so re-arm if that happened.
+	if not _pending.is_empty():
+		set_process(true)
 
 
 # --- debugger transport ------------------------------------------------------
@@ -115,6 +187,8 @@ func _ping() -> Dictionary:
 		"runtime": _version,
 		"scene": _scene_path(root),
 		"fps": float(Engine.get_frames_per_second()),
+		# `game.status` reads this to report PROTOCOL section 14's `capturing`.
+		"capturing": _logger != null,
 	})
 
 
@@ -624,3 +698,61 @@ func _err(code: String, message: String, hint: String = "") -> Dictionary:
 	if hint != "":
 		error["hint"] = hint
 	return {"ok": false, "error": error}
+
+
+# The engine calls these from inside its own logging path: buffer only, never
+# print and never send, or the logger re-enters itself.
+#
+# Measured on 4.7.2: `push_error`/`push_warning` and GDScript runtime errors put
+# their text in `code`, not `rationale` (which stays empty), and the utility
+# functions report `core/variant/variant_utility.cpp` as the file. The script
+# location of such a call is the first `res://` frame of `script_backtraces`.
+class LogSink extends Logger:
+	var sink: Object = null
+
+	func _log_message(message: String, error: bool) -> void:
+		if sink != null:
+			sink._enqueue_log("error" if error else "output", _trim(message))
+
+	func _log_error(_function: String, file: String, line: int, code: String,
+			rationale: String, _editor_notify: bool, error_type: int,
+			script_backtraces: Array) -> void:
+		if sink == null:
+			return
+		var text := _trim(code if code != "" else rationale)
+		var location := _location(file, line)
+		if location == "":
+			location = _frame_location(script_backtraces)
+		if location != "":
+			text = "%s (%s)" % [text, location]
+		sink._enqueue_log("warning" if error_type == 1 else "error", text)
+
+	# C++ source paths are noise in a game log; only project files locate a line.
+	func _location(file: String, line: int) -> String:
+		if file == "" or line <= 0:
+			return ""
+		if file.is_absolute_path():
+			file = ProjectSettings.localize_path(file)
+		if not (file.begins_with("res://") or file.begins_with("user://")):
+			return ""
+		return "%s:%d" % [file, line]
+
+	# Frames read `[0] _ready (res://main.gd:29)`. `str()` on the ScriptBacktrace
+	# entries: `String()` has no constructor for objects and would error inside
+	# the logging callback (which the editor turns into a break).
+	func _frame_location(script_backtraces: Array) -> String:
+		for entry in script_backtraces:
+			for line in str(entry).split("\n"):
+				var open := line.rfind("(")
+				if open < 0 or not line.ends_with(")"):
+					continue
+				var inner := line.substr(open + 1, line.length() - open - 2)
+				if inner.begins_with("res://") or inner.begins_with("user://"):
+					return inner
+		return ""
+
+	func _trim(text: String) -> String:
+		var end := text.length()
+		while end > 0 and (text[end - 1] == "\n" or text[end - 1] == "\r"):
+			end -= 1
+		return text.substr(0, end)

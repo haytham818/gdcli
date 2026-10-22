@@ -15,14 +15,16 @@ pub fn status() -> Call {
 }
 
 /// The last `limit` log lines; `clear` empties the ring buffer afterwards.
-pub fn logs(limit: i64, clear: bool) -> Result<Call> {
+/// `kind` filters by entry kind on the plugin side and is omitted when absent.
+pub fn logs(limit: i64, clear: bool, kind: Option<&str>) -> Result<Call> {
     if limit < 0 {
         return Err(Error::usage("--limit must not be negative"));
     }
-    Ok(Call::read(
-        "game.logs",
-        json!({ "limit": limit, "clear": clear }),
-    ))
+    let mut args = json!({ "limit": limit, "clear": clear });
+    if let Some(kind) = kind {
+        args["kind"] = Value::String(kind.to_string());
+    }
+    Ok(Call::read("game.logs", args))
 }
 
 pub fn clear() -> Call {
@@ -112,18 +114,27 @@ mod tests {
 
     #[test]
     fn logs_forwards_limit_and_clear() {
-        let call = logs(50, true).unwrap();
+        let call = logs(50, true, None).unwrap();
         assert_eq!(call.cmd, "game.logs");
         assert!(!call.mutating);
         assert_eq!(call.args["limit"], 50);
         assert_eq!(call.args["clear"], true);
+        assert!(call.args.get("kind").is_none());
         assert!(call.opts(true, true).is_none());
     }
 
     #[test]
+    fn logs_forwards_the_three_kinds() {
+        for kind in ["output", "error", "warning"] {
+            let call = logs(200, false, Some(kind)).unwrap();
+            assert_eq!(call.args["kind"], kind);
+        }
+    }
+
+    #[test]
     fn logs_rejects_a_negative_limit() {
-        assert!(logs(-1, false).is_err());
-        assert!(logs(0, false).is_ok());
+        assert!(logs(-1, false, None).is_err());
+        assert!(logs(0, false, None).is_ok());
     }
 
     #[test]

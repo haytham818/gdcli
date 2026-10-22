@@ -7,6 +7,11 @@ extends RefCounted
 const M = preload("meta.gd")
 
 const DEFAULT_LIMIT := 200
+const KINDS := ["output", "error", "warning"]
+
+# A live runtime answers `game.ping` within a frame; this only bounds the wait
+# for a project that has no runtime autoload (where `capturing` is false).
+const STATUS_TIMEOUT_MS := 1000
 
 
 static func register(reg: Dictionary) -> void:
@@ -62,12 +67,20 @@ static func _status(opts: Dictionary) -> Dictionary:
 			if session != null and session.is_active():
 				active = true
 				break
-	return M.ok({
+	var data := {
 		"sessions": sessions.size(),
 		# A game launched from the editor is "active" even before the debugger
 		# session finishes handshaking.
 		"active": active or EditorInterface.is_playing_scene(),
-	})
+		"capturing": false,
+	}
+	if not active:
+		return M.ok(data)
+	# Only the runtime knows whether its logger is installed (PROTOCOL section
+	# 14), so ask it in the same `game.ping` every other game command uses. The
+	# reply arrives deferred; `data` is what to answer if the runtime never does
+	# (a project without the autoload), so `status` never fails for that reason.
+	return opts["plugin"].game_request("game.ping", {}, data, STATUS_TIMEOUT_MS)
 
 
 static func _logs(args: Dictionary, opts: Dictionary) -> Dictionary:
@@ -78,11 +91,18 @@ static func _logs(args: Dictionary, opts: Dictionary) -> Dictionary:
 		return M.err("BAD_ARGS", "`limit` must be an integer")
 	var limit := maxi(0, int(raw))
 	var clear := bool(args.get("clear", false))
+	var kind := ""
+	var raw_kind: Variant = args.get("kind", null)
+	if raw_kind != null:
+		if typeof(raw_kind) != TYPE_STRING or not KINDS.has(String(raw_kind)):
+			return M.err("BAD_ARGS", "`kind` must be output, error or warning",
+				"omit it to read every kind")
+		kind = String(raw_kind)
 
 	var capture := _capture(opts)
 	var lines: Array = []
 	if capture != null:
-		lines = capture.logs(limit)
+		lines = capture.logs(limit, kind)
 		if clear:
 			capture.clear()
 	return M.ok({"lines": lines})

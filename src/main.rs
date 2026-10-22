@@ -685,6 +685,9 @@ enum GameCommand {
         /// Clear the captured log afterwards
         #[arg(long)]
         clear: bool,
+        /// Only show entries of this kind
+        #[arg(long, value_enum, value_name = "KIND")]
+        kind: Option<LogKind>,
     },
     /// Clear the captured log
     Clear,
@@ -781,6 +784,27 @@ impl GameValueAs {
             GameValueAs::Gd => "gd",
             GameValueAs::Json => "json",
             GameValueAs::Ref => "ref",
+        }
+    }
+}
+
+/// `game logs --kind`: the entry kinds the runtime captures (PROTOCOL §14).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum LogKind {
+    /// `print` output
+    Output,
+    /// `printerr` and `push_error`
+    Error,
+    /// `push_warning`
+    Warning,
+}
+
+impl LogKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            LogKind::Output => "output",
+            LogKind::Error => "error",
+            LogKind::Warning => "warning",
         }
     }
 }
@@ -1145,7 +1169,9 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
         Command::Game { command } => {
             let call = match command {
                 GameCommand::Status => commands::game::status(),
-                GameCommand::Logs { limit, clear } => commands::game::logs(*limit, *clear)?,
+                GameCommand::Logs { limit, clear, kind } => {
+                    commands::game::logs(*limit, *clear, kind.map(LogKind::as_str))?
+                }
                 GameCommand::Clear => commands::game::clear(),
                 GameCommand::Ping => commands::game::ping(),
                 GameCommand::Tree { depth, props } => commands::game::tree(*depth, *props),
@@ -1407,24 +1433,46 @@ mod tests {
 
         let cli = Cli::try_parse_from(["gdcli", "game", "logs"]).expect("parse game logs");
         let Command::Game {
-            command: GameCommand::Logs { limit, clear },
+            command: GameCommand::Logs { limit, clear, kind },
         } = cli.command
         else {
             panic!("expected game logs");
         };
         assert_eq!(limit, 200);
         assert!(!clear);
+        assert!(kind.is_none());
 
         let cli = Cli::try_parse_from(["gdcli", "game", "logs", "--limit", "10", "--clear"])
             .expect("parse game logs");
         let Command::Game {
-            command: GameCommand::Logs { limit, clear },
+            command: GameCommand::Logs { limit, clear, kind },
         } = cli.command
         else {
             panic!("expected game logs");
         };
         assert_eq!(limit, 10);
         assert!(clear);
+        assert!(kind.is_none());
+
+        for (value, expected) in [
+            ("output", "output"),
+            ("error", "error"),
+            ("warning", "warning"),
+        ] {
+            let cli = Cli::try_parse_from(["gdcli", "game", "logs", "--kind", value])
+                .expect("parse game logs --kind");
+            let Command::Game {
+                command: GameCommand::Logs { kind, .. },
+            } = cli.command
+            else {
+                panic!("expected game logs");
+            };
+            assert_eq!(kind.map(LogKind::as_str), Some(expected));
+        }
+
+        let error = Cli::try_parse_from(["gdcli", "game", "logs", "--kind", "bogus"])
+            .expect_err("reject an unknown kind");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
 
         let cli = Cli::try_parse_from(["gdcli", "game", "clear"]).expect("parse game clear");
         assert!(matches!(

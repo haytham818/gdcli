@@ -544,3 +544,61 @@ gdcli project input add-event <action> (--key K | --physical-key K | --mouse B |
         [--modifiers shift,ctrl] [--device N]
 gdcli project input remove-event <action> --index N
 ```
+
+## 14. Commands (M7, plugin 0.8.0)
+
+`game.logs` finally has content: 4.7's debugger only carries `game_view:*`, so the **runtime**
+captures the game's own log stream and forwards it.
+
+### How the capture works
+
+Measured on 4.7.2: `Logger` exists and `OS.add_logger` / `OS.remove_logger` accept a GDScript
+subclass. `_log_message(message, error)` receives `print` and `printerr` (`error == true`);
+`_log_error(function, file, line, code, rationale, editor_notify, error_type, backtraces)`
+receives `push_warning` (`error_type == 1`) and `push_error` (`error_type == 0`).
+
+`GdcliRuntime` therefore installs a logger when `EngineDebugger.is_active()` and removes it in
+`_exit_tree`. Entries are buffered and flushed **at most once per frame** as a single
+`EngineDebugger.send_message("gdcli:log", [[{kind,text}, ...]])`, because sending from inside
+the logging callback would re-enter the engine's logger. Pending is capped at 500 entries per
+frame; the overflow is reported as one `{"kind":"warning","text":"… N messages dropped"}`.
+
+Mapping: `_log_message` → `output` (or `error` when the `error` flag is set, i.e. `printerr`);
+`_log_error` → `warning` when `error_type == 1`, otherwise `error` (`2` is a GDScript runtime
+error). Trailing newlines are trimmed.
+
+Text shaping matters on 4.7.2: `rationale` is **always empty** and the message arrives in
+`code`, so `code` is used and `rationale` is the fallback. `file`/`line` point at
+`core/variant/variant_utility.cpp`, not the script, so the location is only appended when
+`file` is a `res://`/`user://` path; otherwise the first `script_backtraces` frame is used and
+C++ paths never reach the log.
+
+Overflow keeps the newest entries: the batch including the marker is capped at 500, the
+oldest are dropped, and the marker is placed first so the editor's own 500-entry ring buffer
+cannot evict it. The runtime runs with `PROCESS_MODE_ALWAYS` so a paused game still flushes.
+
+The editor's `debug_capture.gd` appends those entries to the same 500-entry ring buffer that
+`game.logs` reads, so `game.logs` needs no code change beyond the extra `kind`.
+
+### game (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `game.logs` | `{"limit":int=200,"clear":bool=false,"kind"?:"output"\|"error"\|"warning"}` | `{"lines":[{"kind","text","session"}]}` |
+| `game.status` | — | `{"sessions":int,"active":bool,"capturing":bool}` |
+
+`capturing` is true when the runtime has a logger installed. `game.status` asks the runtime
+via `game.ping` when a session is active and falls back to `capturing: false` after ~1 s when
+no runtime answers, so it never hangs or fails.
+
+Known interaction: an *uncaught* GDScript error pauses the game at the editor's breakpoint, so
+the frame flush stops and buffered lines only arrive after the game resumes; `editor.stop` on a
+paused game may drop the last batch. `push_error`/`push_warning` do not pause. Without the runtime autoload
+(`gdcli runtime install`) `game.logs` stays empty — that is the only supported way to read a
+local game's output on 4.7, because the debugger does not carry it.
+
+CLI:
+
+```
+gdcli game logs [--limit N] [--clear] [--kind output|error|warning]
+```

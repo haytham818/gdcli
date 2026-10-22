@@ -1078,8 +1078,7 @@ fn game_log_lines(data: &Value) -> Vec<String> {
     };
     if lines.is_empty() {
         return vec![
-            "no debugger messages captured: Godot 4.7 prints game output to the editor console"
-                .to_string(),
+            "no log lines yet: the runtime autoload forwards game output while a game is running (gdcli runtime install, then play)".to_string(),
         ];
     }
     lines
@@ -1191,7 +1190,7 @@ fn preferred_keys(cmd: &str) -> &'static [&'static str] {
         "editor.screenshot" => &["path", "width", "height"],
         "editor.play" => &["playing", "scene"],
         "editor.stop" => &["playing"],
-        "game.status" => &["sessions", "active"],
+        "game.status" => &["sessions", "active", "capturing"],
         "game.ping" => &["runtime", "scene", "fps"],
         "game.get" | "game.set" => &["name", "type", "value_text"],
         "game.eval" => &["type", "value_text"],
@@ -1337,11 +1336,28 @@ mod tests {
         assert_eq!(
             game_log_lines(&json!({"lines": []})),
             vec![
-                "no debugger messages captured: Godot 4.7 prints game output to the editor console"
+                "no log lines yet: the runtime autoload forwards game output while a game is running (gdcli runtime install, then play)"
             ]
         );
         assert!(game_log_lines(&json!({})).is_empty());
         assert!(game_log_texts(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn game_status_renders_the_capture_state() {
+        let data = json!({"sessions": 1, "active": true, "capturing": true});
+        let lines = object_lines("game.status", &data);
+        assert_eq!(
+            lines,
+            vec!["sessions : 1", "active   : true", "capturing: true"]
+        );
+
+        let data = json!({"sessions": 0, "active": false, "capturing": false});
+        let lines = object_lines("game.status", &data);
+        assert_eq!(
+            lines,
+            vec!["sessions : 0", "active   : false", "capturing: false"]
+        );
     }
 
     #[test]

@@ -45,6 +45,10 @@ for _ in $(seq 1 120); do
 done
 [[ -f "$WORK/.godot/gdcli/endpoint.json" ]] || { tail -20 "$WORK/editor.log"; fail "endpoint never appeared"; }
 
+# The launch argument races the filesystem scan; open it explicitly so the first command
+# always sees an edited scene.
+"$BIN" scene open res://main.tscn --project "$WORK" | sed 's/^/    /'
+
 step "status + tree"
 "$BIN" editor status --project "$WORK" | sed 's/^/    /'
 TREE="$("$BIN" scene tree --project "$WORK" --json)"
@@ -281,7 +285,9 @@ step "M3: ui state, play/stop, game read-only"
 PLAYING="$("$BIN" editor status --project "$WORK" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["playing"])')"
 [[ "$PLAYING" == "True" || "$PLAYING" == "true" ]] || fail "play --wait left playing=$PLAYING"
 "$BIN" game status --project "$WORK" | sed 's/^/    /'
-"$BIN" game logs --limit 5 --project "$WORK" | sed 's/^/    /'
+LOGS_OUT="$("$BIN" game logs --limit 5 --project "$WORK")"
+[[ -n "$LOGS_OUT" ]] || fail "game logs printed nothing when the buffer is empty"
+echo "$LOGS_OUT" | sed 's/^/    /'
 "$BIN" editor stop --project "$WORK" | sed 's/^/    /'
 
 set +e
@@ -338,6 +344,24 @@ PY
 	[[ "$GOT" == *patched* ]] || fail "game set did not take effect in the running game (got '$GOT')"
 	EVAL="$("$BIN" game eval '1 + 1' --quiet --project "$GW")"
 	[[ "$EVAL" == "2" ]] || fail "game eval returned '$EVAL'"
+	LOGS_JSON="$("$BIN" game logs --limit 50 --project "$GW" --json)"
+	python3 - "$LOGS_JSON" <<'PY'
+import json, sys
+lines = json.loads(sys.argv[1])["lines"]
+pairs = {(l["kind"], l["text"].strip()) for l in lines}
+assert any(k == "output" and "fixture: main scene ready" in t for k, t in pairs), pairs
+assert any(k == "error" and "fixture: stderr line" in t for k, t in pairs), pairs
+print("    captured %d log lines, print + stderr both present" % len(lines))
+PY
+	ERR_ONLY="$("$BIN" game logs --kind error --limit 50 --project "$GW" --json)"
+	python3 - "$ERR_ONLY" <<'PY'
+import json, sys
+lines = json.loads(sys.argv[1])["lines"]
+assert lines, "kind=error returned nothing"
+assert all(l["kind"] == "error" for l in lines), lines
+print("    kind filter ok: %d error line(s)" % len(lines))
+PY
+
 	"$BIN" game screenshot --out "$GW/game.png" --project "$GW" | sed 's/^/    /'
 	python3 - "$GW/game.png" <<'PY'
 import struct, sys, pathlib

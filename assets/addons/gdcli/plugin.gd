@@ -341,7 +341,12 @@ func _poll_scene_open(pending: Dictionary) -> Dictionary:
 # Sends `gdcli:req` over the live debugger session and hands the request to the
 # deferred mechanism: the reply arrives asynchronously through `_capture`.
 # game.gd calls this; a dead/missing runtime answers NO_GAME after 3 s.
-func game_request(cmd: String, args: Dictionary) -> Dictionary:
+#
+# `fallback` is a command's answer for a runtime that never replies (used by
+# `game.status`, whose local data is already complete except for `capturing`).
+# `timeout_ms` shortens the wait when a missing runtime is the expected case.
+func game_request(cmd: String, args: Dictionary, fallback: Dictionary = {},
+		timeout_ms: int = GAME_TIMEOUT_MS) -> Dictionary:
 	var session := _game_session()
 	if session == null:
 		return Meta.err("NO_GAME", "no running game", NO_GAME_HINT)
@@ -351,12 +356,15 @@ func game_request(cmd: String, args: Dictionary) -> Dictionary:
 	session.send_message("gdcli:req", [_game_seq, cmd, args])
 	# `id` belongs to the client request and is overwritten by _dispatch, so the
 	# correlation key travels under its own name.
-	return {"__pending": {
+	var pending := {
 		"kind": "game",
 		"game_id": key,
 		"cmd": cmd,
-		"deadline": Time.get_ticks_msec() + GAME_TIMEOUT_MS,
-	}}
+		"deadline": Time.get_ticks_msec() + timeout_ms,
+	}
+	if not fallback.is_empty():
+		pending["fallback"] = fallback
+	return {"__pending": pending}
 
 
 func _game_session() -> EditorDebuggerSession:
@@ -390,6 +398,11 @@ func _poll_game(pending: Dictionary) -> Dictionary:
 		if bool(reply["ok"]):
 			if typeof(payload) != TYPE_DICTIONARY:
 				return Meta.err("INTERNAL", "the game sent a malformed reply")
+			if pending.has("fallback"):
+				# `game.status`: the runtime only contributes `capturing`.
+				var merged: Dictionary = pending["fallback"]
+				merged["capturing"] = bool(payload.get("capturing", false))
+				return Meta.ok(merged)
 			return Meta.ok(payload)
 		if typeof(payload) == TYPE_DICTIONARY and payload.has("code") and payload.has("message"):
 			var error := {
@@ -402,6 +415,8 @@ func _poll_game(pending: Dictionary) -> Dictionary:
 		return Meta.err("INTERNAL", "the game sent a malformed error")
 	if Time.get_ticks_msec() >= int(pending["deadline"]):
 		_game_awaiting.erase(key)
+		if pending.has("fallback"):
+			return Meta.ok(pending["fallback"])
 		return Meta.err("NO_GAME", "no reply from the running game", NO_GAME_HINT)
 	return {}
 

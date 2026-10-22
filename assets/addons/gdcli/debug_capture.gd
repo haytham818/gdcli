@@ -3,9 +3,13 @@ extends EditorDebuggerPlugin
 
 # Collects what a running game prints so `game.logs` can report it, and routes
 # the runtime bridge's replies to the editor plugin. The editor forwards debugger
-# traffic here; only the bridge replies are consumed.
+# traffic here; only bridge replies and the runtime's log batches are consumed.
 
 const MAX_ENTRIES := 500
+
+# PROTOCOL section 14: the runtime forwards the game's own log stream here, so
+# `game.logs` has content for locally launched games.
+const KINDS := ["output", "error", "warning"]
 
 # Measured on 4.7.2: `_has_capture` is asked with the part before the first
 # colon ("gdcli" for a "gdcli:res" message), while `_capture` receives the full
@@ -22,6 +26,12 @@ func _has_capture(prefix: String) -> bool:
 
 
 func _capture(message: String, data: Array, session_id: int) -> bool:
+	if message == "gdcli:log":
+		# [[{kind,text}, ...]]: one batch per game frame.
+		for batch in data:
+			if batch is Array:
+				_append_batch(batch, session_id)
+		return true
 	if message.begins_with("gdcli:"):
 		if bridge != null:
 			bridge.on_game_message(message, data, session_id)
@@ -38,11 +48,17 @@ func _capture(message: String, data: Array, session_id: int) -> bool:
 	return false
 
 
-func logs(limit: int) -> Array:
+func logs(limit: int, kind: String = "") -> Array:
 	if limit <= 0 or _entries.is_empty():
 		return []
-	var start := maxi(0, _entries.size() - limit)
-	return _entries.slice(start)
+	var source := _entries
+	if kind != "":
+		source = []
+		for entry in _entries:
+			if String(entry["kind"]) == kind:
+				source.append(entry)
+	var start := maxi(0, source.size() - limit)
+	return source.slice(start)
 
 
 func clear() -> void:
@@ -51,6 +67,16 @@ func clear() -> void:
 
 func count() -> int:
 	return _entries.size()
+
+
+func _append_batch(batch: Array, session: int) -> void:
+	for entry in batch:
+		if not (entry is Dictionary):
+			continue
+		var kind: Variant = entry.get("kind", "output")
+		if typeof(kind) != TYPE_STRING or not KINDS.has(kind):
+			continue
+		_append(String(kind), _line(str(entry.get("text", ""))), session)
 
 
 func _append(kind: String, text: String, session: int) -> void:
