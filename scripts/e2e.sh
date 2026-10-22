@@ -18,7 +18,7 @@ cargo build --manifest-path "$REPO/Cargo.toml" --quiet
 
 step "fresh fixture in $WORK"
 rm -rf "$WORK"; mkdir -p "$WORK"
-cp "$REPO"/tests/fixture/project.godot "$REPO"/tests/fixture/*.tscn "$WORK"/
+cp "$REPO"/tests/fixture/project.godot "$REPO"/tests/fixture/*.tscn "$REPO"/tests/fixture/*.gd "$WORK"/
 
 step "plugin install"
 "$BIN" plugin install --project "$WORK" | sed 's/^/    /'
@@ -117,6 +117,67 @@ grep -q 'Vector2(9, 9)' "$WORK/main.tscn" || fail "redo did not restore the prop
 step "undo dry run"
 "$BIN" editor undo --dry-run --project "$WORK" | sed 's/^/    /'
 "$BIN" scene tree --project "$WORK" --quiet | grep -qx 'Clock' || fail "--dry-run undo mutated the scene"
+
+step "M2: signals and groups"
+"$BIN" node add Button --name Btn --project "$WORK" >/dev/null
+"$BIN" signal connect Btn pressed Inst/Label set_text --project "$WORK" | sed 's/^/    /'
+"$BIN" signal list Btn --connected-only --project "$WORK" | sed 's/^/    /'
+"$BIN" group add Btn gameplay --project "$WORK" >/dev/null
+GRP="$("$BIN" group list Btn --quiet --project "$WORK")"
+[[ "$GRP" == *gameplay* ]] || fail "group add did not stick (got '$GRP')"
+set +e
+"$BIN" signal connect Btn no_such_signal Inst/Label set_text --project "$WORK" >/dev/null 2>&1
+CODE=$?
+set -e
+[[ $CODE -eq 3 ]] || fail "bad signal should exit 3, got $CODE"
+
+step "M2: instance, resources"
+"$BIN" node instance res://sub.tscn --name Sub2 --project "$WORK" | sed 's/^/    /'
+"$BIN" res new Gradient res://new.tres --project "$WORK" | sed 's/^/    /'
+"$BIN" res duplicate res://new.tres res://copy.tres --project "$WORK" | sed 's/^/    /'
+"$BIN" res info res://copy.tres --project "$WORK" | sed 's/^/    /'
+
+step "M2: project + script + fs"
+"$BIN" project setting set application/config/description "gdcli fixture" --project "$WORK" >/dev/null
+DESC="$("$BIN" project setting get application/config/description --quiet --project "$WORK")"
+[[ "$DESC" == '"gdcli fixture"' || "$DESC" == "gdcli fixture" ]] || fail "setting roundtrip got $DESC"
+"$BIN" project autoload add Boot res://boot.gd --project "$WORK" >/dev/null
+"$BIN" project autoload list --project "$WORK" | sed 's/^/    /'
+"$BIN" project autoload remove Boot --project "$WORK" >/dev/null
+set +e
+"$BIN" script check res://boot.gd res://nope.gd --project "$WORK" | sed 's/^/    /'
+CODE=$?
+set -e
+[[ $CODE -eq 3 ]] || fail "script check with a bad path should exit 3, got $CODE"
+"$BIN" script open res://boot.gd --line 1 --project "$WORK" | sed 's/^/    /'
+"$BIN" script files --project "$WORK" | sed 's/^/    /'
+"$BIN" fs scan --wait --project "$WORK" | sed 's/^/    /'
+
+step "M2: save and assert"
+"$BIN" scene save --project "$WORK" >/dev/null
+python3 - "$WORK" <<'PY'
+import sys, pathlib
+work = pathlib.Path(sys.argv[1])
+text = (work / "main.tscn").read_text()
+checks = {
+    "connection": '[connection signal="pressed" from="Btn" to="Inst/Label" method="set_text"]',
+    "group": 'groups=["gameplay"]',
+    "Sub2 node": '[node name="Sub2" parent="."',
+    "original instance kept": '[node name="Inst" parent="."',
+}
+missing = [k for k, v in checks.items() if v not in text]
+if missing:
+    raise SystemExit("missing from saved scene: %s" % missing)
+if text.count("instance=ExtResource") < 2:
+    raise SystemExit("Sub2 did not keep its instance reference:\n%s" % text)
+for res in ("new.tres", "copy.tres"):
+    if not (work / res).exists():
+        raise SystemExit("missing resource file: %s" % res)
+proj = (work / "project.godot").read_text()
+if "gdcli fixture" not in proj:
+    raise SystemExit("project.godot lost the setting:\n%s" % proj)
+print("    M2 assertions ok:", ", ".join(checks), "+ resources + project settings")
+PY
 
 step "remaining M1 surface"
 "$BIN" prop list Hero --changed --project "$WORK" --quiet | sed 's/^/    /'

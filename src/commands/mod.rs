@@ -2,11 +2,17 @@
 
 pub mod batch;
 pub mod editor;
+pub mod fs;
+pub mod group;
 pub mod node;
 pub mod plugin;
+pub mod project;
 pub mod prop;
 pub mod raw;
+pub mod res;
 pub mod scene;
+pub mod script;
+pub mod signal;
 
 use serde_json::Value;
 
@@ -40,15 +46,21 @@ impl Call {
         }
     }
 
-    /// A mutating command that acts on the undo history itself (undo/redo):
-    /// it takes `dry_run` but never `undo`.
-    pub fn history(cmd: &str, args: Value) -> Self {
+    /// A mutating command whose effect is not part of the scene undo history
+    /// (resources, project settings, filesystem, scripts). It takes `dry_run`
+    /// but never `undo`.
+    pub fn write_no_undo(cmd: &str, args: Value) -> Self {
         Call {
             cmd: cmd.to_string(),
             args,
             mutating: true,
             undoable: false,
         }
+    }
+
+    /// A mutating command that acts on the undo history itself (undo/redo).
+    pub fn history(cmd: &str, args: Value) -> Self {
+        Self::write_no_undo(cmd, args)
     }
 
     /// Per-request options; reads carry none, history actions omit `undo`.

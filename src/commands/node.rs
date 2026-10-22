@@ -60,6 +60,21 @@ pub fn rename(path: &str, name: &str) -> Call {
     Call::write("node.rename", json!({ "path": path, "name": name }))
 }
 
+/// Instantiate another scene as a child (PROTOCOL §9).
+pub fn instance(scene: &str, parent: Option<&str>, name: Option<&str>, index: Option<i64>) -> Call {
+    let mut args = json!({ "scene": scene });
+    if let Some(parent) = parent {
+        args["parent"] = Value::String(parent.to_string());
+    }
+    if let Some(name) = name {
+        args["name"] = Value::String(name.to_string());
+    }
+    if let Some(index) = index {
+        args["index"] = json!(index);
+    }
+    Call::write("node.instance", args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +110,23 @@ mod tests {
     fn dup_omits_an_absent_name() {
         let call = dup("Main/Hero", None);
         assert!(call.args.get("name").is_none());
+    }
+
+    #[test]
+    fn instance_only_requires_the_scene() {
+        let call = instance("res://sub.tscn", None, None, None);
+        assert_eq!(call.cmd, "node.instance");
+        assert!(call.mutating);
+        assert!(call.undoable);
+        assert_eq!(call.args, json!({ "scene": "res://sub.tscn" }));
+    }
+
+    #[test]
+    fn instance_forwards_the_placement_flags() {
+        let call = instance("res://sub.tscn", Some("Main"), Some("Inst"), Some(2));
+        assert_eq!(call.args["scene"], "res://sub.tscn");
+        assert_eq!(call.args["parent"], "Main");
+        assert_eq!(call.args["name"], "Inst");
+        assert_eq!(call.args["index"], 2);
     }
 }

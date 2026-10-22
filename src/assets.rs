@@ -35,6 +35,30 @@ pub const FILES: &[Asset] = &[
         path: "addons/gdcli/commands/prop.gd",
         content: include_str!("../assets/addons/gdcli/commands/prop.gd"),
     },
+    Asset {
+        path: "addons/gdcli/commands/signal.gd",
+        content: include_str!("../assets/addons/gdcli/commands/signal.gd"),
+    },
+    Asset {
+        path: "addons/gdcli/commands/group.gd",
+        content: include_str!("../assets/addons/gdcli/commands/group.gd"),
+    },
+    Asset {
+        path: "addons/gdcli/commands/res.gd",
+        content: include_str!("../assets/addons/gdcli/commands/res.gd"),
+    },
+    Asset {
+        path: "addons/gdcli/commands/project.gd",
+        content: include_str!("../assets/addons/gdcli/commands/project.gd"),
+    },
+    Asset {
+        path: "addons/gdcli/commands/fs.gd",
+        content: include_str!("../assets/addons/gdcli/commands/fs.gd"),
+    },
+    Asset {
+        path: "addons/gdcli/commands/script.gd",
+        content: include_str!("../assets/addons/gdcli/commands/script.gd"),
+    },
 ];
 
 const PLUGIN_CFG: &str = include_str!("../assets/addons/gdcli/plugin.cfg");
@@ -79,5 +103,15 @@ mod tests {
         assert!(paths.contains(&"addons/gdcli/plugin.cfg"));
         assert!(paths.contains(&"addons/gdcli/plugin.gd"));
         assert!(paths.contains(&"addons/gdcli/commands/node.gd"));
+        for path in [
+            "addons/gdcli/commands/signal.gd",
+            "addons/gdcli/commands/group.gd",
+            "addons/gdcli/commands/res.gd",
+            "addons/gdcli/commands/project.gd",
+            "addons/gdcli/commands/fs.gd",
+            "addons/gdcli/commands/script.gd",
+        ] {
+            assert!(paths.contains(&path), "missing embedded {path}");
+        }
     }
 }

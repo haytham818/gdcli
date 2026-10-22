@@ -6,6 +6,8 @@ const M = preload("meta.gd")
 static func register(reg: Dictionary) -> void:
 	reg["node.add"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
 		return _add(args, opts)
+	reg["node.instance"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _instance(args, opts)
 	reg["node.rm"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
 		return _remove(args, opts)
 	reg["node.mv"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
@@ -133,6 +135,78 @@ static func _add(args: Dictionary, opts: Dictionary) -> Dictionary:
 		node.owner = root
 
 	return M.ok({"path": M.rel_path(root, node), "type": node.get_class()})
+
+
+static func _instance(args: Dictionary, opts: Dictionary) -> Dictionary:
+	var scene_path := _s(args, "scene")
+	if scene_path == "":
+		return M.err("BAD_ARGS", "missing `scene`")
+	if not (scene_path.begins_with("res://") or scene_path.begins_with("user://")):
+		return M.err("BAD_ARGS", "`scene` must be a res:// or user:// scene path")
+	if not ResourceLoader.exists(scene_path):
+		return M.err("NOT_FOUND", "scene '%s' not found" % scene_path)
+	var packed := load(scene_path)
+	if not (packed is PackedScene):
+		return M.err("BAD_ARGS", "'%s' is not a PackedScene" % scene_path)
+	scene_path = M.localize(scene_path)
+
+	var parent_lookup := _resolve(_s(args, "parent", ""))
+	if parent_lookup.has("error"):
+		return parent_lookup["error"]
+	var parent: Node = parent_lookup["obj"]
+	var root: Node = parent_lookup["root"]
+	if not M.is_writable(root, parent):
+		return M.instance_error(root, parent)
+
+	var name := _s(args, "name")
+	var name_given := name != ""
+	if name_given:
+		if name != name.validate_node_name():
+			return M.err("BAD_ARGS", "invalid node name '%s'" % name)
+		if parent.get_node_or_null(NodePath(name)) != null:
+			return M.err("BAD_ARGS", "a child named '%s' already exists under '%s'"
+				% [name, M.rel_path(root, parent)])
+	var index := _i(args, "index", -1)
+	if index < -1 or index > parent.get_child_count():
+		return M.err("BAD_ARGS", "`index` must be between 0 and %d" % parent.get_child_count())
+
+	if bool(opts.get("dry_run", false)):
+		var planned_name := name if name_given else String(packed.get_state().get_node_name(0))
+		var planned_path := planned_name if M.rel_path(root, parent) == "." \
+			else "%s/%s" % [M.rel_path(root, parent), planned_name]
+		var data := {"path": planned_path, "scene": scene_path}
+		data["planned"] = [{
+			"op": "instance",
+			"parent": M.rel_path(root, parent),
+			"node": planned_name,
+			"scene": scene_path,
+		}]
+		return M.ok(data)
+
+	var node: Node = packed.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
+	if node == null:
+		return M.err("GODOT_ERROR", "could not instantiate '%s'" % scene_path)
+	if not name_given:
+		name = M.unique_name(parent, String(node.name))
+	node.name = name
+
+	if bool(opts.get("undo", true)):
+		var undo := EditorInterface.get_editor_undo_redo()
+		undo.create_action("gdcli: node.instance", UndoRedo.MERGE_DISABLE, root)
+		undo.add_do_method(parent, "add_child", node, true)
+		if index >= 0 and index < parent.get_child_count():
+			undo.add_do_method(parent, "move_child", node, index)
+		undo.add_do_property(node, "owner", root)
+		undo.add_do_reference(node)
+		undo.add_undo_method(parent, "remove_child", node)
+		undo.commit_action()
+	else:
+		parent.add_child(node, true)
+		if index >= 0 and index < parent.get_child_count() - 1:
+			parent.move_child(node, index)
+		node.owner = root
+
+	return M.ok({"path": M.rel_path(root, node), "scene": scene_path})
 
 
 static func _remove(args: Dictionary, opts: Dictionary) -> Dictionary:

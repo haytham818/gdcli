@@ -82,8 +82,11 @@ the user's history as `gdcli: <cmd>`.
 * **M1** (shipped, plugin 0.2.0) — `plugin install/status`, `editor status`,
   `editor undo/redo/history`, `scene open/save/save-as/reload/tree/roots`,
   `node add/rm/mv/dup/rename`, `prop get/set/list/reset`, `raw`, `batch`, dry-run.
-* **M2** — signals, groups, instancing as a child, resources, project/autoload/input,
-  filesystem scan/reimport, script check/open.
+* **M2** (shipped, plugin 0.3.0) — `signal list/connect/disconnect`, `group list/add/remove`,
+  `node instance`, `res new/info/duplicate`, `project setting get/set`,
+  `project autoload list/add/remove`, `fs status/scan/reimport` (+ `--wait` polling),
+  `script check/open/files/save-all`. Input-map editing moved to M3: binding an
+  `InputEvent` needs its own serialization design, not a passthrough.
 * **M3** — editor UI operations, screenshots, play/stop, read-only game state.
 * **M4** — optional runtime autoload for game-side writes.
 

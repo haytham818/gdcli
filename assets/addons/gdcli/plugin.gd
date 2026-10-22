@@ -6,7 +6,7 @@ extends EditorPlugin
 # editor down, because that takes the user's unsaved work with it.
 
 const PROTOCOL := 1
-const PLUGIN_VERSION := "0.2.0"
+const PLUGIN_VERSION := "0.3.0"
 const MAX_LINE := 1 << 20
 const OPEN_TIMEOUT_FRAMES := 120
 
@@ -18,6 +18,12 @@ const EditorCommands = preload("commands/editor.gd")
 const SceneCommands = preload("commands/scene.gd")
 const NodeCommands = preload("commands/node.gd")
 const PropCommands = preload("commands/prop.gd")
+const SignalCommands = preload("commands/signal.gd")
+const GroupCommands = preload("commands/group.gd")
+const ResCommands = preload("commands/res.gd")
+const ProjectCommands = preload("commands/project.gd")
+const FsCommands = preload("commands/fs.gd")
+const ScriptCommands = preload("commands/script.gd")
 
 var _registry: Dictionary = {}
 var _server: TCPServer = null
@@ -29,7 +35,9 @@ var _clients: Array = []
 
 func _enter_tree() -> void:
 	_registry = {}
-	for module in [Meta, EditorCommands, SceneCommands, NodeCommands, PropCommands]:
+	for module in [Meta, EditorCommands, SceneCommands, NodeCommands, PropCommands,
+			SignalCommands, GroupCommands, ResCommands, ProjectCommands, FsCommands,
+			ScriptCommands]:
 		module.register(_registry)
 	_token = Crypto.new().generate_random_bytes(32).hex_encode()
 	_start_server()

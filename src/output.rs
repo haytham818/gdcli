@@ -4,6 +4,7 @@
 use serde_json::{Value, json};
 
 use crate::client::PROTOCOL;
+use crate::error::{Error, Result};
 use crate::install::{InstallReport, Outcome, PluginStatus};
 
 #[derive(Debug, Clone, Copy)]
@@ -12,15 +13,15 @@ pub struct Fmt {
     pub quiet: bool,
 }
 
-/// Renders one protocol response.
-pub fn render(fmt: Fmt, cmd: &str, data: &Value) {
+/// Renders one protocol response; `args` is the request that produced it.
+pub fn render(fmt: Fmt, cmd: &str, args: &Value, data: &Value) -> Result<()> {
     if fmt.json {
         print_json(data);
-        return;
+        return check_failed(cmd, data);
     }
     if fmt.quiet {
-        print_quiet(cmd, data);
-        return;
+        print_quiet(cmd, args, data);
+        return check_failed(cmd, data);
     }
 
     match cmd {
@@ -29,6 +30,11 @@ pub fn render(fmt: Fmt, cmd: &str, data: &Value) {
         "prop.list" => render_prop_list(data),
         "editor.undo" | "editor.redo" => render_history_action(cmd, data),
         "editor.history" => render_history(data),
+        "signal.list" => print_lines(&signal_lines(data)),
+        "group.list" => render_group_list(data),
+        "script.check" => print_lines(&script_check_lines(data)),
+        "script.files" => render_script_files(data),
+        "project.autoload.list" => render_autoloads(data),
         "meta.capabilities" => {
             if let Some(capabilities) = data.get("capabilities").and_then(Value::as_array) {
                 for capability in capabilities {
@@ -37,6 +43,32 @@ pub fn render(fmt: Fmt, cmd: &str, data: &Value) {
             }
         }
         _ => render_object(cmd, data),
+    }
+    check_failed(cmd, data)
+}
+
+/// `script check` is a report, but any failing path is a command failure.
+fn check_failed(cmd: &str, data: &Value) -> Result<()> {
+    if cmd == "script.check" && script_failed(data) {
+        Err(Error::Exit(3))
+    } else {
+        Ok(())
+    }
+}
+
+fn script_failed(data: &Value) -> bool {
+    data.get("results")
+        .and_then(Value::as_array)
+        .is_some_and(|results| {
+            results
+                .iter()
+                .any(|result| !result.get("ok").and_then(Value::as_bool).unwrap_or(false))
+        })
+}
+
+fn print_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
     }
 }
 
@@ -193,7 +225,7 @@ fn print_json(value: &Value) {
     }
 }
 
-fn print_quiet(cmd: &str, data: &Value) {
+fn print_quiet(cmd: &str, args: &Value, data: &Value) {
     let lines: Vec<String> = match cmd {
         "scene.roots" => entries(data, "scenes", "path"),
         "prop.list" => entries(data, "props", "name"),
@@ -201,11 +233,30 @@ fn print_quiet(cmd: &str, data: &Value) {
         "editor.history" => entries(data, "actions", "name"),
         "editor.undo" | "editor.redo" => history_action_quiet(cmd, data),
         "meta.capabilities" => entries(data, "capabilities", ""),
+        "group.list" => entries(data, "groups", ""),
+        "group.add" | "group.remove" => args.get("group").map(cell).into_iter().collect(),
+        "signal.connect" | "signal.disconnect" => connected_method(data).into_iter().collect(),
+        "project.setting.get" => scalar(data, "value_text").into_iter().collect(),
+        "project.autoload.list" => entries(data, "autoloads", "name"),
+        "fs.scan" => scalar(data, "started").into_iter().collect(),
+        "fs.reimport" => scalar(data, "queued").into_iter().collect(),
+        "script.check" => script_check_quiet(data),
+        "script.files" => script_files_quiet(data),
         _ => primary_scalar(cmd, data).into_iter().collect(),
     };
     for line in lines {
         println!("{line}");
     }
+}
+
+fn scalar(data: &Value, key: &str) -> Option<String> {
+    data.get(key).filter(|value| !value.is_null()).map(cell)
+}
+
+fn connected_method(data: &Value) -> Option<String> {
+    let to = data.get("to")?.as_str()?;
+    let method = data.get("method")?.as_str()?;
+    Some(format!("{to}.{method}"))
 }
 
 fn entries(data: &Value, key: &str, field: &str) -> Vec<String> {
@@ -343,6 +394,124 @@ fn render_prop_list(data: &Value) {
         })
         .unwrap_or_default();
     print_table(&["NAME", "TYPE", "VALUE", "DEFAULT"], &rows);
+}
+
+/// One line per connection: `Btn pressed -> Inst/Label.set_text (flags 2)`.
+fn signal_lines(data: &Value) -> Vec<String> {
+    let target = data.get("target").and_then(Value::as_str).unwrap_or("");
+    let mut lines = Vec::new();
+
+    if let Some(signals) = data.get("signals").and_then(Value::as_array) {
+        for signal in signals {
+            let name = signal.get("name").and_then(Value::as_str).unwrap_or("");
+            let Some(connections) = signal.get("connections").and_then(Value::as_array) else {
+                continue;
+            };
+            for connection in connections {
+                let to = connection.get("to").and_then(Value::as_str).unwrap_or("?");
+                let method = connection
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?");
+                let flags = connection.get("flags").and_then(Value::as_i64).unwrap_or(2);
+                let prefix = if target.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{target} {name}")
+                };
+                lines.push(format!("{prefix} -> {to}.{method} (flags {flags})"));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push("no connections".to_string());
+    }
+    lines
+}
+
+fn render_group_list(data: &Value) {
+    let names: Vec<String> = data
+        .get("groups")
+        .and_then(Value::as_array)
+        .map(|groups| groups.iter().map(cell).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        println!("no groups");
+    } else {
+        println!("{}", names.join(", "));
+    }
+}
+
+fn render_autoloads(data: &Value) {
+    let Some(items) = data.get("autoloads").and_then(Value::as_array) else {
+        return;
+    };
+    if items.is_empty() {
+        println!("no autoloads");
+        return;
+    }
+    for item in items {
+        let name = item.get("name").map(cell).unwrap_or_default();
+        let path = item.get("path").map(cell).unwrap_or_default();
+        let enabled = item.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+        let suffix = if enabled { "" } else { " (disabled)" };
+        println!("{name} -> {path}{suffix}");
+    }
+}
+
+fn script_check_lines(data: &Value) -> Vec<String> {
+    let Some(results) = data.get("results").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    results
+        .iter()
+        .map(|result| {
+            let path = result.get("path").and_then(Value::as_str).unwrap_or("");
+            if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+                return format!("{:<5} {path}", "ok");
+            }
+            match result.get("error").and_then(Value::as_str) {
+                Some(error) if !error.is_empty() => format!("{:<5} {path}: {error}", "error"),
+                _ => format!("{:<5} {path}", "error"),
+            }
+        })
+        .collect()
+}
+
+fn script_check_quiet(data: &Value) -> Vec<String> {
+    let Some(results) = data.get("results").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    results
+        .iter()
+        .map(|result| {
+            let path = result.get("path").and_then(Value::as_str).unwrap_or("");
+            let status = if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+                "ok"
+            } else {
+                "error"
+            };
+            format!("{path}: {status}")
+        })
+        .collect()
+}
+
+fn render_script_files(data: &Value) {
+    for (key, heading) in [("open", "open:"), ("unsaved", "unsaved:")] {
+        println!("{heading}");
+        if let Some(paths) = data.get(key).and_then(Value::as_array) {
+            for path in paths {
+                println!("  {}", cell(path));
+            }
+        }
+    }
+}
+
+fn script_files_quiet(data: &Value) -> Vec<String> {
+    let mut paths = entries(data, "open", "");
+    paths.extend(entries(data, "unsaved", ""));
+    paths
 }
 
 fn render_history_action(cmd: &str, data: &Value) {
@@ -519,6 +688,16 @@ fn preferred_keys(cmd: &str) -> &'static [&'static str] {
         "prop.get" => &["name", "type", "value", "value_text", "is_default"],
         "prop.set" => &["name", "type", "value_text"],
         "node.add" => &["path", "type"],
+        "node.instance" => &["path", "scene"],
+        "res.info" => &["path", "type", "resource_name"],
+        "res.new" => &["path", "type"],
+        "project.setting.get" => &["key", "value_text", "type", "exists"],
+        "project.setting.set" => &["key", "value_text"],
+        "project.autoload.add" => &["name", "path"],
+        "signal.connect" | "signal.disconnect" => &["source", "signal", "to", "method"],
+        "group.add" | "group.remove" => &["target", "groups"],
+        "fs.status" => &["scanning", "progress", "importing"],
+        "script.save_all" => &["saved"],
         _ => &["path", "type", "project", "name", "value_text"],
     }
 }
@@ -623,5 +802,75 @@ mod tests {
     fn history_falls_back_to_position_without_indexes() {
         let data = json!({"actions": [{"name": "first"}, {"name": "second"}]});
         assert_eq!(history_lines(&data), vec!["0   first", "1   second"]);
+    }
+
+    #[test]
+    fn signal_lines_name_the_target_signal_and_connection() {
+        let data = json!({
+            "target": "Btn",
+            "signals": [
+                {
+                    "name": "pressed",
+                    "args": 0,
+                    "connections": [
+                        {"to": "Inst/Label", "method": "set_text", "flags": 2},
+                        {"to": "Inst", "method": "hide", "flags": 1},
+                    ],
+                },
+                {
+                    "name": "toggled",
+                    "args": 1,
+                    "connections": [{"to": "Inst", "method": "toggle"}],
+                },
+            ],
+        });
+        assert_eq!(
+            signal_lines(&data),
+            vec![
+                "Btn pressed -> Inst/Label.set_text (flags 2)",
+                "Btn pressed -> Inst.hide (flags 1)",
+                "Btn toggled -> Inst.toggle (flags 2)",
+            ]
+        );
+    }
+
+    #[test]
+    fn signal_lines_report_no_connections() {
+        assert_eq!(
+            signal_lines(&json!({"target": "Btn", "signals": []})),
+            vec!["no connections"]
+        );
+        assert_eq!(
+            signal_lines(&json!({
+                "target": "Btn",
+                "signals": [{"name": "pressed", "args": 0, "connections": []}],
+            })),
+            vec!["no connections"]
+        );
+    }
+
+    #[test]
+    fn script_check_lines_mark_ok_and_errors() {
+        let data = json!({
+            "results": [
+                {"path": "res://a.gd", "ok": true},
+                {"path": "res://b.gd", "ok": false, "error": "parse error"},
+                {"path": "res://c.gd", "ok": false},
+            ],
+        });
+        assert_eq!(
+            script_check_lines(&data),
+            vec![
+                "ok    res://a.gd",
+                "error res://b.gd: parse error",
+                "error res://c.gd",
+            ]
+        );
+        assert!(script_failed(&data));
+
+        assert_eq!(
+            script_check_quiet(&data),
+            vec!["res://a.gd: ok", "res://b.gd: error", "res://c.gd: error"]
+        );
     }
 }

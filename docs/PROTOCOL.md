@@ -217,3 +217,88 @@ property exists and that the parsed value converts to its type before mutating.
 * `batch` reads NDJSON requests from stdin (same shape as §4) and writes NDJSON responses
   in order, on a single connection.
 * On a `4` exit the CLI suggests `gdcli plugin upgrade`.
+
+## 9. Commands (M2, plugin 0.3.0)
+
+Same envelope and rules as §4. `opts.undo` applies only where noted; resource, project,
+filesystem and script commands are not undoable and ignore it.
+
+### signal
+
+| cmd | args | data |
+| --- | --- | --- |
+| `signal.list` | `{"target","connected_only":bool=false}` | `{"target","signals":[{"name","args":int,"connections":[{"to","method","flags":int}]}]}` |
+| `signal.connect` | `{"source","signal","to","method","flags":int=2,"allow_missing":bool=false}` | `{"source","signal","to","method"}` |
+| `signal.disconnect` | `{"source","signal","to","method"}` | `{"source","signal","to","method"}` |
+
+`flags` defaults to `CONNECT_PERSIST` (2) so the connection is serialized into the scene.
+`signal` must exist on `source`; `to`/`method` must resolve unless `allow_missing` is set.
+Both commands are one undo action (`connect`/`disconnect`).
+
+### group
+
+| cmd | args | data |
+| --- | --- | --- |
+| `group.list` | `{"target","builtin":bool=false}` | `{"target","groups":[str]}` |
+| `group.add` | `{"target","group"}` | `{"target","groups":[str]}` |
+| `group.remove` | `{"target","group"}` | `{"target","groups":[str]}` |
+
+Groups are added persistent (`add_to_group(name, true)`) so they reach the `.tscn`.
+`builtin` includes engine-internal groups (names starting with `_`). Undoable.
+
+### node (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `node.instance` | `{"scene","parent"?,"name"?,"index"?}` | `{"path","scene"}` |
+
+Instantiates with `GEN_EDIT_STATE_INSTANCE`, sets `owner` to the edited root and is one undo
+action. The saved node must carry `instance=ExtResource(...)` — that is the acceptance test.
+
+### res
+
+| cmd | args | data |
+| --- | --- | --- |
+| `res.new` | `{"type","path"}` | `{"path","type"}` |
+| `res.info` | `{"path"}` | `{"path","type","resource_name"}` |
+| `res.duplicate` | `{"from","to"}` | `{"path"}` |
+
+Property access on a `res://` file goes through `prop.*` (§5, §7). Not undoable.
+
+### project
+
+| cmd | args | data |
+| --- | --- | --- |
+| `project.setting.get` | `{"key"}` | `{"key","value_text","type","exists":bool}` |
+| `project.setting.set` | `{"key","value","as"?}` | `{"key","value_text"}` |
+| `project.autoload.list` | — | `{"autoloads":[{"name","path","enabled":bool}]}` |
+| `project.autoload.add` | `{"name","path"}` | `{"name","path"}` |
+| `project.autoload.remove` | `{"name"}` | `{}` |
+
+`setting.set` writes through `ProjectSettings.set_setting` + `ProjectSettings.save()`, which
+rewrites `project.godot` (formatting may change; this is the engine's writer, not ours).
+Autoloads use `EditorPlugin.add_autoload_singleton` / `remove_autoload_singleton`. Not undoable.
+
+### fs
+
+| cmd | args | data |
+| --- | --- | --- |
+| `fs.status` | — | `{"scanning":bool,"progress":float,"importing":bool}` |
+| `fs.scan` | `{"sources":bool=false}` | `{"started":true}` |
+| `fs.reimport` | `{"paths":[str]}` | `{"queued":int}` |
+
+Scanning is asynchronous and never blocks the editor main thread. `gdcli --wait` polls
+`fs.status` every 200 ms up to 60 s and fails with `GODOT_ERROR` on timeout.
+
+### script
+
+| cmd | args | data |
+| --- | --- | --- |
+| `script.check` | `{"paths":[str]}` | `{"results":[{"path","ok":bool,"error":str?}]}` |
+| `script.open` | `{"path","line":int=0}` | `{}` |
+| `script.files` | — | `{"open":[str],"unsaved":[str]}` |
+| `script.save_all` | — | `{"saved":int}` |
+
+`check` is load-based (`ResourceLoader.load` with `CACHE_MODE_IGNORE`): it reports whether a
+script parses, not where. Print the editor's error panel / use `godot --check-only` for
+column-level detail.

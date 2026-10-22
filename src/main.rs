@@ -87,6 +87,36 @@ enum Command {
         #[command(subcommand)]
         command: PropCommand,
     },
+    /// Signal connections
+    Signal {
+        #[command(subcommand)]
+        command: SignalCommand,
+    },
+    /// Node groups
+    Group {
+        #[command(subcommand)]
+        command: GroupCommand,
+    },
+    /// Resources under res://
+    Res {
+        #[command(subcommand)]
+        command: ResCommand,
+    },
+    /// Project settings and autoloads
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// The editor's filesystem scans and imports
+    Fs {
+        #[command(subcommand)]
+        command: FsCommand,
+    },
+    /// Scripts open in the editor
+    Script {
+        #[command(subcommand)]
+        command: ScriptCommand,
+    },
     /// Send a raw protocol command
     Raw {
         /// Protocol command name, e.g. meta.capabilities
@@ -220,6 +250,20 @@ enum NodeCommand {
         /// New name
         name: String,
     },
+    /// Instantiate a scene as a child node
+    Instance {
+        /// res:// path of the scene to instantiate
+        scene: String,
+        /// Parent address; defaults to the edited scene root
+        #[arg(long, value_name = "P")]
+        parent: Option<String>,
+        /// Node name
+        #[arg(long, value_name = "N")]
+        name: Option<String>,
+        /// Position among the parent's children
+        #[arg(long, value_name = "I")]
+        index: Option<i64>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -261,6 +305,193 @@ enum PropCommand {
         /// Property name
         name: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum SignalCommand {
+    /// List a node's signals and their connections
+    List {
+        /// Node address
+        target: String,
+        /// Only signals that have connections
+        #[arg(long)]
+        connected_only: bool,
+    },
+    /// Connect a signal to a method
+    Connect {
+        /// Source node address
+        source: String,
+        /// Signal name
+        signal: String,
+        /// Target node address
+        to: String,
+        /// Method on the target
+        method: String,
+        /// Godot Object.ConnectFlags; 2 is CONNECT_PERSIST
+        #[arg(long, default_value_t = commands::signal::DEFAULT_FLAGS, value_name = "N")]
+        flags: i64,
+        /// Allow a target or method that does not resolve yet
+        #[arg(long)]
+        allow_missing: bool,
+    },
+    /// Disconnect a signal from a method
+    Disconnect {
+        /// Source node address
+        source: String,
+        /// Signal name
+        signal: String,
+        /// Target node address
+        to: String,
+        /// Method on the target
+        method: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GroupCommand {
+    /// List a node's groups
+    List {
+        /// Node address
+        target: String,
+        /// Include engine-internal groups
+        #[arg(long)]
+        builtin: bool,
+    },
+    /// Add a node to a group
+    Add {
+        /// Node address
+        target: String,
+        /// Group name
+        group: String,
+    },
+    /// Remove a node from a group
+    Remove {
+        /// Node address
+        target: String,
+        /// Group name
+        group: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ResCommand {
+    /// Create a new resource
+    New {
+        /// Resource type, e.g. Theme
+        #[arg(value_name = "TYPE")]
+        r#type: String,
+        /// res:// destination path
+        path: String,
+    },
+    /// Show a resource's type and name
+    Info {
+        /// res:// path
+        path: String,
+    },
+    /// Copy a resource to another path
+    Duplicate {
+        /// res:// source path
+        from: String,
+        /// res:// destination path
+        to: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    /// Read or write a project setting
+    Setting {
+        #[command(subcommand)]
+        command: ProjectSettingCommand,
+    },
+    /// List, add or remove autoload singletons
+    Autoload {
+        #[command(subcommand)]
+        command: AutoloadCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectSettingCommand {
+    /// Read one setting
+    Get {
+        /// Setting key
+        key: String,
+    },
+    /// Write one setting
+    Set {
+        /// Setting key
+        key: String,
+        /// Value, parsed according to --as
+        value: String,
+        /// How the engine parses the value
+        #[arg(long = "as", value_enum, default_value = "gd")]
+        r#as: ValueAs,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AutoloadCommand {
+    /// List autoload singletons
+    List,
+    /// Add an autoload singleton
+    Add {
+        /// Singleton name
+        name: String,
+        /// res:// path of the script or scene
+        path: String,
+    },
+    /// Remove an autoload singleton
+    Remove {
+        /// Singleton name
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FsCommand {
+    /// Report scan and import progress
+    Status,
+    /// Start a filesystem scan
+    Scan {
+        /// Also scan the project's source directories
+        #[arg(long)]
+        sources: bool,
+        /// Wait until scanning and importing finish
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Reimport the given resources
+    Reimport {
+        /// res:// paths to reimport
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<String>,
+        /// Wait until scanning and importing finish
+        #[arg(long)]
+        wait: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ScriptCommand {
+    /// Check that scripts parse
+    Check {
+        /// res:// paths of the scripts
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<String>,
+    },
+    /// Open a script in the editor
+    Open {
+        /// res:// path of the script
+        path: String,
+        /// Line to scroll to
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        line: i64,
+    },
+    /// List open and unsaved scripts
+    Files,
+    /// Save every open script
+    SaveAll,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -360,8 +591,7 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                 None
             };
             let data = client.call_raw(&raw.cmd, &raw.args, opts)?;
-            output::render(format, "raw", &data);
-            Ok(())
+            output::render(format, "raw", &raw.args, &data)
         }
         Command::Editor { command } => {
             let call = match command {
@@ -402,6 +632,12 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                 NodeCommand::Mv { path, to, index } => commands::node::mv(path, to, *index),
                 NodeCommand::Dup { path, name } => commands::node::dup(path, name.as_deref()),
                 NodeCommand::Rename { path, name } => commands::node::rename(path, name),
+                NodeCommand::Instance {
+                    scene,
+                    parent,
+                    name,
+                    index,
+                } => commands::node::instance(scene, parent.as_deref(), name.as_deref(), *index),
             };
             execute(&project, call, format, opts)
         }
@@ -423,6 +659,84 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
             };
             execute(&project, call, format, opts)
         }
+        Command::Signal { command } => {
+            let call = match command {
+                SignalCommand::List {
+                    target,
+                    connected_only,
+                } => commands::signal::list(target, *connected_only),
+                SignalCommand::Connect {
+                    source,
+                    signal,
+                    to,
+                    method,
+                    flags,
+                    allow_missing,
+                } => commands::signal::connect(source, signal, to, method, *flags, *allow_missing),
+                SignalCommand::Disconnect {
+                    source,
+                    signal,
+                    to,
+                    method,
+                } => commands::signal::disconnect(source, signal, to, method),
+            };
+            execute(&project, call, format, opts)
+        }
+        Command::Group { command } => {
+            let call = match command {
+                GroupCommand::List { target, builtin } => commands::group::list(target, *builtin),
+                GroupCommand::Add { target, group } => commands::group::add(target, group),
+                GroupCommand::Remove { target, group } => commands::group::remove(target, group),
+            };
+            execute(&project, call, format, opts)
+        }
+        Command::Res { command } => {
+            let call = match command {
+                ResCommand::New { r#type, path } => commands::res::new(r#type, path),
+                ResCommand::Info { path } => commands::res::info(path),
+                ResCommand::Duplicate { from, to } => commands::res::duplicate(from, to),
+            };
+            execute(&project, call, format, opts)
+        }
+        Command::Project { command } => {
+            let call = match command {
+                ProjectCommand::Setting { command } => match command {
+                    ProjectSettingCommand::Get { key } => commands::project::setting_get(key),
+                    ProjectSettingCommand::Set { key, value, r#as } => {
+                        commands::project::setting_set(key, value, r#as.as_str())
+                    }
+                },
+                ProjectCommand::Autoload { command } => match command {
+                    AutoloadCommand::List => commands::project::autoload_list(),
+                    AutoloadCommand::Add { name, path } => {
+                        commands::project::autoload_add(name, path)
+                    }
+                    AutoloadCommand::Remove { name } => commands::project::autoload_remove(name),
+                },
+            };
+            execute(&project, call, format, opts)
+        }
+        Command::Fs { command } => {
+            let (call, wait) = match command {
+                FsCommand::Status => (commands::fs::status(), false),
+                FsCommand::Scan { sources, wait } => (commands::fs::scan(*sources), *wait),
+                FsCommand::Reimport { paths, wait } => (commands::fs::reimport(paths), *wait),
+            };
+            if wait {
+                execute_waiting(&project, call, format, opts)
+            } else {
+                execute(&project, call, format, opts)
+            }
+        }
+        Command::Script { command } => {
+            let call = match command {
+                ScriptCommand::Check { paths } => commands::script::check(paths),
+                ScriptCommand::Open { path, line } => commands::script::open(path, *line),
+                ScriptCommand::Files => commands::script::files(),
+                ScriptCommand::SaveAll => commands::script::save_all(),
+            };
+            execute(&project, call, format, opts)
+        }
     }
 }
 
@@ -433,6 +747,93 @@ fn execute(project: &Path, call: Call, format: Fmt, opts: Opts) -> Result<()> {
         &call.args,
         call.opts(opts.undo.unwrap_or(true), opts.dry_run),
     )?;
-    output::render(format, &call.cmd, &data);
-    Ok(())
+    output::render(format, &call.cmd, &call.args, &data)
+}
+
+/// Sends `fs.scan` / `fs.reimport`, waits for the filesystem to settle, then
+/// renders the original response.
+fn execute_waiting(project: &Path, call: Call, format: Fmt, opts: Opts) -> Result<()> {
+    let mut client = Client::connect(project)?;
+    let data = client.call(
+        &call.cmd,
+        &call.args,
+        call.opts(opts.undo.unwrap_or(true), opts.dry_run),
+    )?;
+    commands::fs::wait(&mut client)?;
+    output::render(format, &call.cmd, &call.args, &data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_connect_defaults_to_persistent_flags() {
+        let cli = Cli::try_parse_from([
+            "gdcli",
+            "signal",
+            "connect",
+            "Btn",
+            "pressed",
+            "Inst",
+            "on_pressed",
+        ])
+        .expect("parse signal connect");
+
+        let Command::Signal {
+            command:
+                SignalCommand::Connect {
+                    flags,
+                    allow_missing,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected signal connect");
+        };
+        assert_eq!(flags, 2);
+        assert!(!allow_missing);
+    }
+
+    #[test]
+    fn node_instance_placement_is_optional() {
+        let cli = Cli::try_parse_from(["gdcli", "node", "instance", "res://sub.tscn"])
+            .expect("parse node instance");
+
+        let Command::Node {
+            command:
+                NodeCommand::Instance {
+                    parent,
+                    name,
+                    index,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected node instance");
+        };
+        assert!(parent.is_none());
+        assert!(name.is_none());
+        assert!(index.is_none());
+    }
+
+    #[test]
+    fn reimport_and_check_need_at_least_one_path() {
+        assert!(Cli::try_parse_from(["gdcli", "fs", "reimport"]).is_err());
+        assert!(Cli::try_parse_from(["gdcli", "script", "check"]).is_err());
+    }
+
+    #[test]
+    fn script_open_defaults_to_the_first_line() {
+        let cli = Cli::try_parse_from(["gdcli", "script", "open", "res://a.gd"])
+            .expect("parse script open");
+
+        let Command::Script {
+            command: ScriptCommand::Open { line, .. },
+        } = cli.command
+        else {
+            panic!("expected script open");
+        };
+        assert_eq!(line, 0);
+    }
 }
