@@ -117,6 +117,24 @@ enum PluginCommand {
 enum EditorCommand {
     /// Project, edited scene, open scenes and play state
     Status,
+    /// Undo actions in the edited scene's history
+    Undo {
+        /// Number of actions to undo, clamped to 1..100
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        count: i64,
+    },
+    /// Redo actions in the edited scene's history
+    Redo {
+        /// Number of actions to redo, clamped to 1..100
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        count: i64,
+    },
+    /// Print the edited scene's undo history, oldest first
+    History {
+        /// Maximum number of actions to show
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        limit: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -290,7 +308,7 @@ fn run() -> i32 {
         quiet: cli.quiet,
     };
     let opts = Opts {
-        undo: !cli.no_undo,
+        undo: Some(!cli.no_undo),
         dry_run: cli.dry_run,
     };
 
@@ -348,6 +366,9 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
         Command::Editor { command } => {
             let call = match command {
                 EditorCommand::Status => commands::editor::status(),
+                EditorCommand::Undo { count } => commands::editor::undo(*count),
+                EditorCommand::Redo { count } => commands::editor::redo(*count),
+                EditorCommand::History { limit } => commands::editor::history(*limit)?,
             };
             execute(&project, call, format, opts)
         }
@@ -410,7 +431,7 @@ fn execute(project: &Path, call: Call, format: Fmt, opts: Opts) -> Result<()> {
     let data = client.call(
         &call.cmd,
         &call.args,
-        if call.mutating { Some(opts) } else { None },
+        call.opts(opts.undo.unwrap_or(true), opts.dry_run),
     )?;
     output::render(format, &call.cmd, &data);
     Ok(())

@@ -27,6 +27,8 @@ pub fn render(fmt: Fmt, cmd: &str, data: &Value) {
         "scene.tree" => render_tree(data),
         "scene.roots" => render_scene_roots(data),
         "prop.list" => render_prop_list(data),
+        "editor.undo" | "editor.redo" => render_history_action(cmd, data),
+        "editor.history" => render_history(data),
         "meta.capabilities" => {
             if let Some(capabilities) = data.get("capabilities").and_then(Value::as_array) {
                 for capability in capabilities {
@@ -196,6 +198,8 @@ fn print_quiet(cmd: &str, data: &Value) {
         "scene.roots" => entries(data, "scenes", "path"),
         "prop.list" => entries(data, "props", "name"),
         "scene.tree" => entries(data, "nodes", "path"),
+        "editor.history" => entries(data, "actions", "name"),
+        "editor.undo" | "editor.redo" => history_action_quiet(cmd, data),
         "meta.capabilities" => entries(data, "capabilities", ""),
         _ => primary_scalar(cmd, data).into_iter().collect(),
     };
@@ -341,6 +345,121 @@ fn render_prop_list(data: &Value) {
     print_table(&["NAME", "TYPE", "VALUE", "DEFAULT"], &rows);
 }
 
+fn render_history_action(cmd: &str, data: &Value) {
+    let (done_key, done_verb, would_key, would_verb, nothing) = match cmd {
+        "editor.redo" => (
+            "redone",
+            "redid",
+            "would_redo",
+            "would redo",
+            "nothing to redo",
+        ),
+        _ => (
+            "undone",
+            "undid",
+            "would_undo",
+            "would undo",
+            "nothing to undo",
+        ),
+    };
+
+    if let Some(would) = data.get(would_key).and_then(Value::as_array) {
+        if would.is_empty() {
+            println!("{nothing}");
+            return;
+        }
+        println!(
+            "{would_verb} {} {}:",
+            would.len(),
+            plural(would.len() as i64, "action")
+        );
+        for name in would {
+            println!("  {}", cell(name));
+        }
+        return;
+    }
+
+    let count = data.get(done_key).and_then(Value::as_i64).unwrap_or(0);
+    if count <= 0 {
+        println!("{nothing}");
+        return;
+    }
+    let mut line = format!("{done_verb} {count} {}", plural(count, "action"));
+    if let Some(action) = data.get("action").and_then(Value::as_str) {
+        line.push_str(&format!(", now at {action}"));
+    }
+    println!("{line}");
+}
+
+fn history_action_quiet(cmd: &str, data: &Value) -> Vec<String> {
+    let (done_key, would_key) = if cmd == "editor.redo" {
+        ("redone", "would_redo")
+    } else {
+        ("undone", "would_undo")
+    };
+    if let Some(count) = data.get(done_key).and_then(Value::as_i64) {
+        return vec![count.to_string()];
+    }
+    if let Some(would) = data.get(would_key).and_then(Value::as_array) {
+        return vec![would.len().to_string()];
+    }
+    Vec::new()
+}
+
+/// The undo stack reads chronologically: oldest first, newest at the bottom.
+fn render_history(data: &Value) {
+    for line in history_lines(data) {
+        println!("{line}");
+    }
+}
+
+fn history_lines(data: &Value) -> Vec<String> {
+    let Some(actions) = data.get("actions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut indexed: Vec<(i64, &str, bool)> = actions
+        .iter()
+        .enumerate()
+        .map(|(position, action)| {
+            (
+                action
+                    .get("index")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(position as i64),
+                action.get("name").and_then(Value::as_str).unwrap_or(""),
+                action
+                    .get("current")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+        })
+        .collect();
+    indexed.sort_by_key(|(index, _, _)| *index);
+
+    let width = indexed
+        .iter()
+        .map(|(index, _, _)| index.to_string().chars().count())
+        .max()
+        .unwrap_or(1);
+
+    indexed
+        .into_iter()
+        .map(|(index, name, current)| {
+            let marker = if current { "*" } else { " " };
+            format!("{index:>width$} {marker} {name}")
+        })
+        .collect()
+}
+
+fn plural(count: i64, noun: &str) -> String {
+    if count == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    }
+}
+
 fn render_object(cmd: &str, data: &Value) {
     let Some(object) = data.as_object() else {
         println!("{}", cell(data));
@@ -459,5 +578,50 @@ fn cell(value: &Value) -> String {
         Value::Array(items) => items.iter().map(cell).collect::<Vec<_>>().join(", "),
         Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_marks_the_current_action_and_right_aligns_indexes() {
+        let data = json!({
+            "count": 3,
+            "current": 1,
+            "actions": [
+                {"index": 0, "name": "gdcli: node.add", "current": false},
+                {"index": 1, "name": "gdcli: prop.set", "current": true},
+                {"index": 2, "name": "gdcli: node.rm", "current": false},
+            ],
+        });
+        assert_eq!(
+            history_lines(&data),
+            vec![
+                "0   gdcli: node.add",
+                "1 * gdcli: prop.set",
+                "2   gdcli: node.rm",
+            ]
+        );
+    }
+
+    #[test]
+    fn history_pads_two_digit_indexes() {
+        let data = json!({
+            "count": 2,
+            "current": 10,
+            "actions": [
+                {"index": 9, "name": "nine", "current": false},
+                {"index": 10, "name": "ten", "current": true},
+            ],
+        });
+        assert_eq!(history_lines(&data), vec![" 9   nine", "10 * ten"]);
+    }
+
+    #[test]
+    fn history_falls_back_to_position_without_indexes() {
+        let data = json!({"actions": [{"name": "first"}, {"name": "second"}]});
+        assert_eq!(history_lines(&data), vec!["0   first", "1   second"]);
     }
 }

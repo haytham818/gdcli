@@ -17,7 +17,7 @@ The plugin writes an endpoint file when it comes up:
 ```json
 {
   "protocol": 1,
-  "plugin_version": "0.1.0",
+  "plugin_version": "0.2.0",
   "port": 41234,
   "token": "9f2c...64 hex chars",
   "pid": 745244,
@@ -57,7 +57,7 @@ reply when the token is wrong.
 ```json
 {"ok": true, "data": {
   "protocol": 1,
-  "plugin_version": "0.1.0",
+  "plugin_version": "0.2.0",
   "godot": "4.7.2-stable",
   "project": "/abs/path",
   "capabilities": ["scene.open", "node.add", "..."]
@@ -143,6 +143,19 @@ The CLI passes the value through as a string plus a mode; the engine parses it.
 | cmd | args | data |
 | --- | --- | --- |
 | `editor.status` | — | `{"project","godot","edited_scene","open_scenes":[str],"unsaved":[str],"playing":bool,"playing_scene"}` |
+| `editor.undo` | `{"count":int=1}` | `{"undone":int,"action":str?,"can_undo":bool,"can_redo":bool,"history_count":int}` |
+| `editor.redo` | `{"count":int=1}` | `{"redone":int,"action":str?,"can_undo":bool,"can_redo":bool,"history_count":int}` |
+| `editor.history` | `{"limit":int=20}` | `{"count":int,"current":int,"actions":[{"index":int,"name":str,"current":bool}]}` |
+
+Undo and redo act on the **currently edited scene's** history:
+`EditorInterface.get_editor_undo_redo().get_history_undo_redo(manager.get_object_history_id(root))`.
+`EditorUndoRedoManager` itself exposes no `undo()`/`redo()`; only the per-object `UndoRedo`
+returned by `get_history_undo_redo()` does. `count`: missing or `null` → 1, any number → truncated and clamped to 1..100, any other JSON
+type → `BAD_ARGS`. `history.actions` is ordered by **ascending** `index` (oldest first) and
+holds at most `limit` of the most recent actions. `dry_run` returns
+``{"would_undo":[names...]}` / `{"would_redo":[names...]}` (only those keys, not the normal
+`data` of §4) and mutates nothing. `opts.undo` is
+ignored here — an undo is not itself undoable. No edited scene → `NO_SCENE`.
 
 ### scene
 

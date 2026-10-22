@@ -97,6 +97,27 @@ if missing:
 print("    scene assertions ok:", ", ".join(checks))
 PY
 
+step "undo / redo"
+"$BIN" node add Sprite2D --name Clock --project "$WORK" >/dev/null
+"$BIN" prop set Clock position 'Vector2(9, 9)' --project "$WORK" >/dev/null
+"$BIN" scene save --project "$WORK" >/dev/null
+grep -q 'name="Clock"' "$WORK/main.tscn" || fail "Clock was not saved"
+"$BIN" editor history --project "$WORK" | sed 's/^/    /'
+
+"$BIN" editor undo --count 2 --project "$WORK" | sed 's/^/    /'
+"$BIN" scene save --project "$WORK" >/dev/null
+grep -q 'name="Clock"' "$WORK/main.tscn" && fail "undo did not remove Clock from the saved scene"
+"$BIN" editor status --project "$WORK" --quiet >/dev/null || true
+
+"$BIN" editor redo --count 2 --project "$WORK" | sed 's/^/    /'
+"$BIN" scene save --project "$WORK" >/dev/null
+grep -q 'name="Clock"' "$WORK/main.tscn" || fail "redo did not restore Clock"
+grep -q 'Vector2(9, 9)' "$WORK/main.tscn" || fail "redo did not restore the property value"
+
+step "undo dry run"
+"$BIN" editor undo --dry-run --project "$WORK" | sed 's/^/    /'
+"$BIN" scene tree --project "$WORK" --quiet | grep -qx 'Clock' || fail "--dry-run undo mutated the scene"
+
 step "remaining M1 surface"
 "$BIN" prop list Hero --changed --project "$WORK" --quiet | sed 's/^/    /'
 "$BIN" prop set Hero position 'Vector2(5, 6)' --project "$WORK" >/dev/null

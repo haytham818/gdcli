@@ -79,8 +79,9 @@ the user's history as `gdcli: <cmd>`.
 
 ## Milestones
 
-* **M1** — `plugin install/status`, `editor status`, `scene open/save/save-as/tree/roots`,
-  `node add/rm/mv/dup/rename`, `prop get/set/list/reset`, `raw`, `batch`, undo + dry-run.
+* **M1** (shipped, plugin 0.2.0) — `plugin install/status`, `editor status`,
+  `editor undo/redo/history`, `scene open/save/save-as/reload/tree/roots`,
+  `node add/rm/mv/dup/rename`, `prop get/set/list/reset`, `raw`, `batch`, dry-run.
 * **M2** — signals, groups, instancing as a child, resources, project/autoload/input,
   filesystem scan/reimport, script check/open.
 * **M3** — editor UI operations, screenshots, play/stop, read-only game state.

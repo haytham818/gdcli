@@ -88,7 +88,9 @@ pub struct Ping {
 /// Per-request options, omitted for read-only commands.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct Opts {
-    pub undo: bool,
+    /// `None` leaves `opts.undo` out entirely, as undo/redo require.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo: Option<bool>,
     pub dry_run: bool,
 }
 

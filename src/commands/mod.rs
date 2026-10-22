@@ -10,11 +10,15 @@ pub mod scene;
 
 use serde_json::Value;
 
+use crate::client::Opts;
+
 /// One wire request plus whether the undo/dry-run options apply to it.
 pub struct Call {
     pub cmd: String,
     pub args: Value,
     pub mutating: bool,
+    /// Whether `opts.undo` applies; false for history actions such as undo/redo.
+    pub undoable: bool,
 }
 
 impl Call {
@@ -23,6 +27,7 @@ impl Call {
             cmd: cmd.to_string(),
             args,
             mutating: false,
+            undoable: false,
         }
     }
 
@@ -31,6 +36,26 @@ impl Call {
             cmd: cmd.to_string(),
             args,
             mutating: true,
+            undoable: true,
         }
+    }
+
+    /// A mutating command that acts on the undo history itself (undo/redo):
+    /// it takes `dry_run` but never `undo`.
+    pub fn history(cmd: &str, args: Value) -> Self {
+        Call {
+            cmd: cmd.to_string(),
+            args,
+            mutating: true,
+            undoable: false,
+        }
+    }
+
+    /// Per-request options; reads carry none, history actions omit `undo`.
+    pub fn opts(&self, undo: bool, dry_run: bool) -> Option<Opts> {
+        self.mutating.then(|| Opts {
+            undo: self.undoable.then_some(undo),
+            dry_run,
+        })
     }
 }
