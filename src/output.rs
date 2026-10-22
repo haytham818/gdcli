@@ -39,6 +39,8 @@ pub fn render(fmt: Fmt, cmd: &str, args: &Value, data: &Value) -> Result<()> {
         "editor.screenshot" | "game.screenshot" => render_screenshot(data),
         "project.plugins.list" => render_plugins(data),
         "project.plugins.enable" | "project.plugins.disable" => render_plugin_toggle(data),
+        "input.actions" => print_lines(&input_actions_lines(data)),
+        "input.list" => print_lines(&input_list_lines(data)),
         "game.logs" => print_lines(&game_log_lines(data)),
         "signal.list" => print_lines(&signal_lines(data)),
         "group.list" => render_group_list(data),
@@ -459,6 +461,11 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
         "project.plugins.enable" | "project.plugins.disable" => {
             scalar(data, "name").into_iter().collect()
         }
+        "input.actions" | "input.list" => entries(data, "actions", "name"),
+        "input.action.add" | "input.action.rename" => scalar(data, "name").into_iter().collect(),
+        "input.action.remove" => args.get("name").map(cell).into_iter().collect(),
+        "input.event.add" => scalar(data, "index").into_iter().collect(),
+        "input.event.remove" => scalar(data, "action").into_iter().collect(),
         "fs.scan" => scalar(data, "started").into_iter().collect(),
         "fs.reimport" => scalar(data, "queued").into_iter().collect(),
         "script.check" => script_check_quiet(data),
@@ -754,6 +761,120 @@ fn plugin_toggle_line(data: &Value) -> String {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     format!("{name}: {}", if enabled { "enabled" } else { "disabled" })
+}
+
+/// `project input actions` shows names and deadzones, nothing else.
+fn input_actions_lines(data: &Value) -> Vec<String> {
+    let Some(actions) = data.get("actions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if actions.is_empty() {
+        return vec!["no input actions".to_string()];
+    }
+    let rows: Vec<Vec<String>> = actions
+        .iter()
+        .map(|action| {
+            vec![
+                action.get("name").map(cell).unwrap_or_default(),
+                deadzone(action),
+            ]
+        })
+        .collect();
+    table_lines(&["NAME", "DEADZONE"], &rows)
+}
+
+/// `project input list` groups bindings under their action, addressed by index.
+fn input_list_lines(data: &Value) -> Vec<String> {
+    let Some(actions) = data.get("actions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if actions.is_empty() {
+        return vec!["no input actions".to_string()];
+    }
+
+    let mut lines = Vec::new();
+    for action in actions {
+        let name = action.get("name").map(cell).unwrap_or_default();
+        lines.push(format!("{name} (deadzone {})", deadzone(action)));
+        match action.get("events").and_then(Value::as_array) {
+            Some(events) if !events.is_empty() => {
+                for (position, event) in events.iter().enumerate() {
+                    lines.push(event_line(event, position));
+                }
+            }
+            _ => lines.push("  (no events)".to_string()),
+        }
+    }
+    lines
+}
+
+fn deadzone(action: &Value) -> String {
+    action
+        .get("deadzone")
+        .filter(|value| !value.is_null())
+        .map(cell)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn event_line(event: &Value, position: usize) -> String {
+    let index = event
+        .get("index")
+        .and_then(Value::as_i64)
+        .unwrap_or(position as i64);
+    let (kind, detail) = event_parts(event);
+    if detail.is_empty() {
+        format!("  [{index}] {kind}")
+    } else {
+        format!("  [{index}] {kind} {detail}")
+    }
+}
+
+/// One `<type> <detail>` pair per event, the same shape the plugin emits.
+fn event_parts(event: &Value) -> (String, String) {
+    if let Some(raw) = event.get("raw").and_then(Value::as_str) {
+        return ("raw".to_string(), raw.to_string());
+    }
+
+    let kind = event.get("type").and_then(Value::as_str).unwrap_or("?");
+    let keys: &[&str] = match kind {
+        "key" => &["key", "physical_key"],
+        "mouse" => &["button"],
+        "joy_button" => &["button", "device"],
+        "joy_axis" => &["axis", "value", "device"],
+        _ => &[],
+    };
+
+    let mut parts = Vec::new();
+    for key in keys {
+        push_event_part(&mut parts, event, key);
+    }
+    if kind == "key" && event.get("echo").and_then(Value::as_bool).unwrap_or(false) {
+        parts.push("echo=true".to_string());
+    }
+    if matches!(kind, "key" | "mouse")
+        && let Some(modifiers) = event.get("modifiers").and_then(Value::as_array)
+        && !modifiers.is_empty()
+    {
+        let names: Vec<String> = modifiers.iter().map(cell).collect();
+        parts.push(format!("modifiers={}", names.join(",")));
+    }
+
+    let detail = if keys.is_empty() && kind != "?" {
+        serde_json::to_string(event).unwrap_or_default()
+    } else {
+        parts.join(" ")
+    };
+    (kind.to_string(), detail)
+}
+
+fn push_event_part(parts: &mut Vec<String>, event: &Value, key: &str) {
+    let Some(value) = event.get(key).filter(|value| !value.is_null()) else {
+        return;
+    };
+    if value.as_str().is_some_and(str::is_empty) {
+        return;
+    }
+    parts.push(format!("{key}={}", cell(value)));
 }
 
 fn script_check_lines(data: &Value) -> Vec<String> {
@@ -1434,6 +1555,89 @@ mod tests {
         assert_eq!(
             script_check_quiet(&data),
             vec!["res://a.gd: ok", "res://b.gd: error", "res://c.gd: error"]
+        );
+    }
+
+    #[test]
+    fn input_actions_render_only_names_and_deadzones() {
+        let data = json!({
+            "actions": [
+                {"name": "jump", "deadzone": 0.5, "events": [{"type": "key", "key": "Space"}]},
+                {"name": "move_left", "deadzone": 0.2, "events": []},
+            ],
+        });
+        let lines = input_actions_lines(&data);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            vec!["NAME", "DEADZONE"]
+        );
+        assert_eq!(
+            lines[1].split_whitespace().collect::<Vec<_>>(),
+            vec!["jump", "0.5"]
+        );
+        assert_eq!(
+            lines[2].split_whitespace().collect::<Vec<_>>(),
+            vec!["move_left", "0.2"]
+        );
+        assert_eq!(
+            input_actions_lines(&json!({"actions": []})),
+            vec!["no input actions"]
+        );
+    }
+
+    #[test]
+    fn input_list_groups_events_under_each_action() {
+        let data = json!({
+            "actions": [
+                {"name": "jump", "deadzone": 0.5, "events": [
+                    {"type": "key", "key": "Space", "physical_key": null,
+                     "modifiers": ["shift"], "echo": false, "index": 0},
+                    {"type": "joy_button", "button": 0, "device": -1, "index": 1},
+                ]},
+                {"name": "aim", "deadzone": 0.2, "events": [
+                    {"type": "mouse", "button": "right", "modifiers": [], "index": 0},
+                    {"type": "joy_axis", "axis": 1, "value": -1.0, "device": 2, "index": 1},
+                ]},
+                {"name": "touch", "deadzone": 0.5, "events": [
+                    {"raw": "Object(InputEventScreenTouch,...)", "index": 0},
+                ]},
+                {"name": "idle", "deadzone": 0.5, "events": []},
+            ],
+        });
+        assert_eq!(
+            input_list_lines(&data),
+            vec![
+                "jump (deadzone 0.5)",
+                "  [0] key key=Space modifiers=shift",
+                "  [1] joy_button button=0 device=-1",
+                "aim (deadzone 0.2)",
+                "  [0] mouse button=right",
+                "  [1] joy_axis axis=1 value=-1.0 device=2",
+                "touch (deadzone 0.5)",
+                "  [0] raw Object(InputEventScreenTouch,...)",
+                "idle (deadzone 0.5)",
+                "  (no events)",
+            ]
+        );
+    }
+
+    #[test]
+    fn input_list_falls_back_to_the_array_position() {
+        let data = json!({"actions": [{"name": "jump", "deadzone": 0.5, "events": [
+            {"type": "key", "key": "A", "modifiers": [], "echo": true},
+        ]}]});
+        assert_eq!(
+            input_list_lines(&data),
+            vec!["jump (deadzone 0.5)", "  [0] key key=A echo=true"]
+        );
+    }
+
+    #[test]
+    fn input_list_reports_an_empty_map() {
+        assert_eq!(
+            input_list_lines(&json!({"actions": []})),
+            vec!["no input actions"]
         );
     }
 }

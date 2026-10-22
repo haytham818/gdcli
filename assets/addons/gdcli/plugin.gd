@@ -28,6 +28,7 @@ const SignalCommands = preload("commands/signal.gd")
 const GroupCommands = preload("commands/group.gd")
 const ResCommands = preload("commands/res.gd")
 const ProjectCommands = preload("commands/project.gd")
+const InputCommands = preload("commands/input.gd")
 const FsCommands = preload("commands/fs.gd")
 const ScriptCommands = preload("commands/script.gd")
 const GameCommands = preload("commands/game.gd")
@@ -60,8 +61,8 @@ func _enter_tree() -> void:
 	_version = _read_plugin_version()
 	_registry = {}
 	for module in [Meta, EditorCommands, SceneCommands, NodeCommands, PropCommands,
-			SignalCommands, GroupCommands, ResCommands, ProjectCommands, FsCommands,
-			ScriptCommands, GameCommands]:
+			SignalCommands, GroupCommands, ResCommands, ProjectCommands, InputCommands,
+			FsCommands, ScriptCommands, GameCommands]:
 		module.register(_registry)
 	debug_capture = DebugCapture.new() as EditorDebuggerPlugin
 	add_debugger_plugin(debug_capture)

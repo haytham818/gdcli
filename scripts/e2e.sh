@@ -243,6 +243,33 @@ grep -qx 'addons/gdcli/' "$PW/.gitignore" || fail ".gitignore missing addons/gdc
 "$BIN" plugin install --private --project "$PW" >/dev/null
 [[ "$(grep -c '^addons/gdcli/$' "$PW/.gitignore")" == "1" ]] || fail ".gitignore entry duplicated"
 
+step "M6: input map"
+"$BIN" project input add-action jump --deadzone 0.2 --project "$WORK" | sed 's/^/    /'
+"$BIN" project input add-event jump --key Space --modifiers shift --project "$WORK" | sed 's/^/    /'
+"$BIN" project input add-event jump --joy-button 0 --project "$WORK" | sed 's/^/    /'
+"$BIN" project input list --action jump --project "$WORK" | sed 's/^/    /'
+grep -q '"device":-1' "$WORK/project.godot" || fail "input events are not written with device -1"
+grep -q '"keycode":32' "$WORK/project.godot" || fail "Space was not serialized as keycode 32"
+grep -q '"shift_pressed":true' "$WORK/project.godot" || fail "the shift modifier was dropped"
+
+set +e
+"$BIN" project input add-event jump --key Space --modifiers shift --project "$WORK" >/dev/null 2>&1
+CODE=$?
+set -e
+[[ $CODE -eq 3 ]] || fail "duplicate binding should exit 3, got $CODE"
+
+"$BIN" project input remove-event jump --index 1 --project "$WORK" | sed 's/^/    /'
+"$BIN" project input rename-action jump leap --project "$WORK" | sed 's/^/    /'
+"$BIN" project input list --project "$WORK" | sed 's/^/    /'
+"$BIN" project input remove-action leap --project "$WORK" | sed 's/^/    /'
+grep -q '^leap=' "$WORK/project.godot" && fail "remove-action left leap in project.godot"
+python3 - "$WORK/project.godot" <<'PY'
+import sys, pathlib
+text = pathlib.Path(sys.argv[1]).read_text()
+assert 'jump=' not in text and 'leap=' not in text, "an input action survived remove-action"
+print("    input map cleaned up")
+PY
+
 step "M3: ui state, play/stop, game read-only"
 "$BIN" editor select Inst --project "$WORK" | sed 's/^/    /'
 "$BIN" editor select Inst Btn --add --project "$WORK" | sed 's/^/    /'

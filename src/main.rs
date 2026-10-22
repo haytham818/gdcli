@@ -36,9 +36,12 @@ struct Cli {
     project: Option<PathBuf>,
 
     /// Print only the response data as JSON
+    // The id is `output_json` so `project input add-event` can use `--json <SPEC>`
+    // for an event spec; that subcommand hides this global flag behind a placeholder.
     #[arg(
         long,
         global = true,
+        id = "output_json",
         help_heading = "Global options",
         conflicts_with = "quiet"
     )]
@@ -484,6 +487,90 @@ enum ProjectCommand {
     Plugins {
         #[command(subcommand)]
         command: PluginsCommand,
+    },
+    /// Read or change the input map
+    Input {
+        #[command(subcommand)]
+        command: InputCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InputCommand {
+    /// List action names and deadzones
+    Actions,
+    /// List actions with their bindings
+    List {
+        /// Only this action
+        #[arg(long, value_name = "NAME")]
+        action: Option<String>,
+    },
+    /// Add an action
+    AddAction {
+        /// Action name
+        name: String,
+        /// Deadzone applied to the action
+        #[arg(long, default_value_t = 0.5, value_name = "F")]
+        deadzone: f64,
+    },
+    /// Remove an action and its bindings
+    RemoveAction {
+        /// Action name
+        name: String,
+    },
+    /// Rename an action
+    RenameAction {
+        /// Current action name
+        old: String,
+        /// New action name
+        new: String,
+    },
+    /// Add one event binding to an action
+    AddEvent {
+        /// Action name
+        action: String,
+        /// Logical key name, e.g. Space
+        #[arg(long, value_name = "K")]
+        key: Option<String>,
+        /// Physical key name, layout independent
+        #[arg(long, value_name = "K")]
+        physical_key: Option<String>,
+        /// Mouse button name or number
+        #[arg(long, value_name = "B")]
+        mouse: Option<String>,
+        /// Joypad button number
+        #[arg(long, value_name = "N")]
+        joy_button: Option<i64>,
+        /// Joypad axis number
+        #[arg(long, value_name = "N")]
+        joy_axis: Option<i64>,
+        /// Event spec as a JSON object
+        #[arg(long, value_name = "SPEC")]
+        json: Option<String>,
+        /// Event as a raw Godot object literal
+        #[arg(long, value_name = "TEXT")]
+        raw: Option<String>,
+        /// Comma-separated modifiers: shift, ctrl, alt, meta
+        #[arg(long, value_name = "LIST")]
+        modifiers: Option<String>,
+        /// Event device; defaults to -1
+        #[arg(long, value_name = "N", allow_negative_numbers = true)]
+        device: Option<i64>,
+        /// Joypad axis value; defaults to 1.0
+        #[arg(long, value_name = "F", allow_negative_numbers = true)]
+        axis_value: Option<f64>,
+        /// Internal: keeps the global --json output switch out of this command,
+        /// where --json carries an event spec instead.
+        #[arg(long = "__output-json", hide = true)]
+        output_json: bool,
+    },
+    /// Remove one event binding by its index
+    RemoveEvent {
+        /// Action name
+        action: String,
+        /// Index in the action's stored event array
+        #[arg(long, value_name = "N")]
+        index: i64,
     },
 }
 
@@ -989,6 +1076,48 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                     PluginsCommand::Enable { name } => commands::project::plugins_enable(name),
                     PluginsCommand::Disable { name } => commands::project::plugins_disable(name),
                 },
+                ProjectCommand::Input { command } => match command {
+                    InputCommand::Actions => commands::input::actions(),
+                    InputCommand::List { action } => commands::input::list(action.as_deref()),
+                    InputCommand::AddAction { name, deadzone } => {
+                        commands::input::add_action(name, *deadzone)
+                    }
+                    InputCommand::RemoveAction { name } => commands::input::remove_action(name),
+                    InputCommand::RenameAction { old, new } => {
+                        commands::input::rename_action(old, new)
+                    }
+                    InputCommand::AddEvent {
+                        action,
+                        key,
+                        physical_key,
+                        mouse,
+                        joy_button,
+                        joy_axis,
+                        json,
+                        raw,
+                        modifiers,
+                        device,
+                        axis_value,
+                        output_json: _,
+                    } => commands::input::add_event(
+                        action,
+                        commands::input::Event {
+                            key: key.clone(),
+                            physical_key: physical_key.clone(),
+                            mouse: mouse.clone(),
+                            joy_button: *joy_button,
+                            joy_axis: *joy_axis,
+                            json: json.clone(),
+                            raw: raw.clone(),
+                            modifiers: modifiers.clone(),
+                            device: *device,
+                            axis_value: *axis_value,
+                        },
+                    )?,
+                    InputCommand::RemoveEvent { action, index } => {
+                        commands::input::remove_event(action, *index)?
+                    }
+                },
             };
             execute(&project, call, format, opts)
         }
@@ -1042,7 +1171,7 @@ fn execute(project: &Path, call: Call, format: Fmt, opts: Opts) -> Result<()> {
         &call.args,
         call.opts(opts.undo.unwrap_or(true), opts.dry_run),
     )?;
-    output::render(format, &call.cmd, &call.args, &data)
+    output::render(format, call.render_key(), &call.args, &data)
 }
 
 /// Sends `fs.scan` / `fs.reimport`, waits for the filesystem to settle, then
@@ -1055,7 +1184,7 @@ fn execute_waiting(project: &Path, call: Call, format: Fmt, opts: Opts) -> Resul
         call.opts(opts.undo.unwrap_or(true), opts.dry_run),
     )?;
     commands::fs::wait(&mut client)?;
-    output::render(format, &call.cmd, &call.args, &data)
+    output::render(format, call.render_key(), &call.args, &data)
 }
 
 /// Sends `editor.play`, waits for the editor to report playing, then renders the
@@ -1071,7 +1200,7 @@ fn execute_playing(project: &Path, call: Call, format: Fmt, opts: Opts) -> Resul
     if let Some(object) = data.as_object_mut() {
         object.insert("playing".to_string(), serde_json::Value::Bool(true));
     }
-    output::render(format, &call.cmd, &call.args, &data)
+    output::render(format, call.render_key(), &call.args, &data)
 }
 
 #[cfg(test)]
@@ -1504,5 +1633,174 @@ mod tests {
         };
         assert!(check);
         assert!(private);
+    }
+
+    #[test]
+    fn project_input_list_and_actions_parse() {
+        let cli = Cli::try_parse_from(["gdcli", "project", "input", "actions"])
+            .expect("parse input actions");
+        assert!(matches!(
+            cli.command,
+            Command::Project {
+                command: ProjectCommand::Input {
+                    command: InputCommand::Actions
+                }
+            }
+        ));
+
+        let cli =
+            Cli::try_parse_from(["gdcli", "project", "input", "list"]).expect("parse input list");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::List { action },
+                },
+        } = cli.command
+        else {
+            panic!("expected input list");
+        };
+        assert!(action.is_none());
+
+        let cli = Cli::try_parse_from(["gdcli", "project", "input", "list", "--action", "jump"])
+            .expect("parse filtered input list");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::List { action },
+                },
+        } = cli.command
+        else {
+            panic!("expected input list");
+        };
+        assert_eq!(action.as_deref(), Some("jump"));
+    }
+
+    #[test]
+    fn project_input_action_mutations_parse() {
+        let cli = Cli::try_parse_from(["gdcli", "project", "input", "add-action", "jump"])
+            .expect("parse add-action");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::AddAction { name, deadzone },
+                },
+        } = cli.command
+        else {
+            panic!("expected add-action");
+        };
+        assert_eq!(name, "jump");
+        assert_eq!(deadzone, 0.5);
+
+        let cli = Cli::try_parse_from([
+            "gdcli",
+            "project",
+            "input",
+            "add-action",
+            "jump",
+            "--deadzone",
+            "0.2",
+        ])
+        .expect("parse add-action deadzone");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::AddAction { deadzone, .. },
+                },
+        } = cli.command
+        else {
+            panic!("expected add-action");
+        };
+        assert_eq!(deadzone, 0.2);
+
+        let cli = Cli::try_parse_from(["gdcli", "project", "input", "rename-action", "old", "new"])
+            .expect("parse rename-action");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::RenameAction { old, new },
+                },
+        } = cli.command
+        else {
+            panic!("expected rename-action");
+        };
+        assert_eq!(old, "old");
+        assert_eq!(new, "new");
+    }
+
+    #[test]
+    fn project_input_add_event_parses_every_source_flag() {
+        for args in [
+            vec!["--key", "Space"],
+            vec!["--physical-key", "A"],
+            vec!["--mouse", "left"],
+            vec!["--joy-button", "2"],
+            vec!["--joy-axis", "1", "--axis-value", "-1"],
+            vec!["--json", r#"{"type":"key","key":"A"}"#],
+            vec!["--raw", "Object(InputEventScreenTouch)"],
+        ] {
+            let mut argv = vec!["gdcli", "project", "input", "add-event", "jump"];
+            argv.extend(args);
+            let cli = Cli::try_parse_from(&argv)
+                .unwrap_or_else(|error| panic!("parse add-event {argv:?}: {error}"));
+            assert!(matches!(
+                cli.command,
+                Command::Project {
+                    command: ProjectCommand::Input {
+                        command: InputCommand::AddEvent { .. }
+                    }
+                }
+            ));
+        }
+
+        // `--json` carries an event spec here, not the global output switch.
+        let cli = Cli::try_parse_from([
+            "gdcli",
+            "project",
+            "input",
+            "add-event",
+            "jump",
+            "--json",
+            r#"{"type":"key","key":"A"}"#,
+        ])
+        .expect("parse json event spec");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::AddEvent { json, .. },
+                },
+        } = cli.command
+        else {
+            panic!("expected add-event");
+        };
+        assert_eq!(json.as_deref(), Some(r#"{"type":"key","key":"A"}"#));
+    }
+
+    #[test]
+    fn project_input_remove_event_needs_an_index() {
+        let cli = Cli::try_parse_from([
+            "gdcli",
+            "project",
+            "input",
+            "remove-event",
+            "jump",
+            "--index",
+            "2",
+        ])
+        .expect("parse remove-event");
+        let Command::Project {
+            command:
+                ProjectCommand::Input {
+                    command: InputCommand::RemoveEvent { action, index },
+                },
+        } = cli.command
+        else {
+            panic!("expected remove-event");
+        };
+        assert_eq!(action, "jump");
+        assert_eq!(index, 2);
+
+        assert!(
+            Cli::try_parse_from(["gdcli", "project", "input", "remove-event", "jump"]).is_err()
+        );
     }
 }

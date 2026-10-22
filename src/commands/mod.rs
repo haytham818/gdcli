@@ -5,6 +5,7 @@ pub mod editor;
 pub mod fs;
 pub mod game;
 pub mod group;
+pub mod input;
 pub mod node;
 pub mod plugin;
 pub mod project;
@@ -31,6 +32,8 @@ pub struct Call {
     pub mutating: bool,
     /// Whether `opts.undo` applies; false for history actions such as undo/redo.
     pub undoable: bool,
+    /// Renderer key when one wire command backs several CLI views.
+    pub view: Option<&'static str>,
 }
 
 impl Call {
@@ -40,6 +43,7 @@ impl Call {
             args,
             mutating: false,
             undoable: false,
+            view: None,
         }
     }
 
@@ -49,6 +53,7 @@ impl Call {
             args,
             mutating: true,
             undoable: true,
+            view: None,
         }
     }
 
@@ -61,7 +66,20 @@ impl Call {
             args,
             mutating: true,
             undoable: false,
+            view: None,
         }
+    }
+
+    /// Renders this response under a CLI-specific key, for commands whose wire
+    /// reply is shared by more than one view (`input.list` backs both
+    /// `input actions` and `input list`).
+    pub fn with_view(mut self, key: &'static str) -> Self {
+        self.view = Some(key);
+        self
+    }
+
+    pub fn render_key(&self) -> &str {
+        self.view.unwrap_or(&self.cmd)
     }
 
     /// A mutating command that acts on the undo history itself (undo/redo).

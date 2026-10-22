@@ -462,3 +462,85 @@ absent, idempotent) so the installed files never reach a shared repository. The
 `[editor_plugins]` line in `project.godot` is still written and is still tracked — a teammate
 without the addon will see a missing-plugin warning, so either everyone runs
 `gdcli plugin install` or the addon is committed instead.
+
+## 13. Commands (M6, plugin 0.7.0)
+
+The input map is project settings, so the plugin only converts a small event DSL to real
+`InputEvent` objects and lets the engine serialize them (`ProjectSettings.set_setting(
+"input/<action>", {"deadzone": float, "events": Array})` + `save()`). Verified output on
+4.7.2 is the canonical block real projects contain.
+
+### input
+
+| cmd | args | data |
+| --- | --- | --- |
+| `input.list` | `{"action"?}` | `{"actions":[{"name","deadzone":float,"events":[event]}]}` |
+| `input.action.add` | `{"name","deadzone":float=0.5}` | `{"name","deadzone"}` |
+| `input.action.remove` | `{"name"}` | `{}` |
+| `input.action.rename` | `{"from","to"}` | `{"name"}` |
+| `input.event.add` | `{"action","event":spec,"index"?}` | `{"action","index","event":event}` |
+| `input.event.remove` | `{"action","index"}` | `{"action","events":[event]}` |
+
+`actions` is sorted by name. Every event in the output carries its `index` in the stored
+array, which is the address `input.event.remove` expects.
+
+### Event spec
+
+```json
+{"type": "key",        "key": "Space", "physical_key": null, "modifiers": ["shift"], "echo": false}
+{"type": "mouse",      "button": "left", "modifiers": []}
+{"type": "joy_button", "button": 0, "device": -1}
+{"type": "joy_axis",   "axis": 1, "value": -1.0, "device": -1}
+{"raw": "Object(InputEventScreenTouch,...)"}
+```
+
+* Exactly one of `key` / `physical_key` for `type: "key"`. `physical_key` sets
+  `physical_keycode` and leaves `keycode` at 0 (Godot's convention for layout-independent
+  bindings). A name that `OS.find_keycode_from_string` resolves to 0 is `BAD_ARGS`.
+* `modifiers` accepts `shift`, `ctrl`, `alt`, `meta` (case-insensitive).
+* `device` defaults to **-1 and is always written explicitly**: letting the engine default it
+  produces `"device": 16 / 32 / 3` depending on the event class, which looks like a
+  device-restricted binding and does not match hand-written projects.
+* `{"raw": ...}` is `str_to_var` and reconstructs any event class; the output falls back to
+  the same form for event types outside the DSL, so `input.list` can always round-trip.
+
+### Rules
+
+* Actions are enumerated from the **on-disk `[input]` section**, not from
+  `ProjectSettings.get_property_list()`: the latter also reports every built-in `input/ui_*`
+  action, so an empty project would look non-empty and built-ins could not be overridden.
+* `input.list` with an `action` that does not exist is `{"actions":[]}`, not `NOT_FOUND` — it
+  is a filter. `action.remove`/`rename` on a missing source is `NOT_FOUND`.
+* `deadzone` is only required to be a number; it is not range-checked.
+* Joypad events carrying `modifiers` are `BAD_ARGS` rather than silently dropping them.
+* A key event whose on-disk `keycode` and `physical_keycode` are both non-zero cannot be
+  expressed in the DSL, so it round-trips as `{"raw": ...}`.
+* `input.event.add` accepts `index` 0..len (len means append); `event.remove` needs 0..len-1.
+* Forward-looking note: `InputEventScreenTouch.is_match(other, true)` is false even for an
+  identical event on 4.7.2, so raw touch events are not duplicate-checked.
+* Action names must be non-empty and must not start with `input/`. Adding an existing action
+  or renaming onto an existing one is `BAD_ARGS`.
+* `input.event.add` into a missing action is `NOT_FOUND` (hint: `add-action`). A duplicate
+  binding is `BAD_ARGS` and reports the existing index; comparison uses
+  `InputEvent.is_match(other, true)`. `index` defaults to append.
+* `input.event.remove` with an out-of-range index is `BAD_ARGS`.
+* Mutations are **not undoable** (`opts.undo` is ignored); each one calls
+  `ProjectSettings.save()`, so `project.godot` is rewritten by the engine. `dry_run` returns
+  `planned` and changes nothing.
+* A missing `[input]` section, or an entry without `deadzone`/`events`, reads as
+  `deadzone 0.5` / `[]` and never crashes.
+* The editor's running game is not affected; the map applies to the next play.
+
+CLI surface:
+
+```
+gdcli project input actions
+gdcli project input list [--action NAME]
+gdcli project input add-action <name> [--deadzone F]
+gdcli project input remove-action <name>
+gdcli project input rename-action <old> <new>
+gdcli project input add-event <action> (--key K | --physical-key K | --mouse B |
+        --joy-button N | --joy-axis N --axis-value F | --json SPEC | --raw TEXT)
+        [--modifiers shift,ctrl] [--device N]
+gdcli project input remove-event <action> --index N
+```
