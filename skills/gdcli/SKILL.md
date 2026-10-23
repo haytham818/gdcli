@@ -123,6 +123,8 @@ editor. `game.logs` captures the game's own `print` / `printerr` / `push_error` 
 - The engine rewrites the scene header on save (`unique_id=`, uid order). Judge the semantic
   diff, not the bytes.
 - Screenshots need a real renderer: under `--headless` every screenshot returns `NO_API`.
+- UI layout: `prop set <control> position/size …` works, and the `.tscn` records `offset_*`.
+  A Control inside a `Container` is re-laid-out at runtime, so set anchors or offsets there.
 - `--as` decides how a value is parsed: `gd` (default, `str_to_var`), `json`, `ref`, `expr`.
 - Exit codes: `0` ok, `1` usage, `2` not connected, `3` command failed, `4` version mismatch.
 

@@ -204,7 +204,7 @@ static func unique_name(parent: Node, base: String) -> String:
 
 # --- properties --------------------------------------------------------------
 
-static func property_infos(obj: Object) -> Array:
+static func property_infos(obj: Object, include_all := false) -> Array:
 	var out: Array = []
 	for prop in obj.get_property_list():
 		var usage: int = int(prop["usage"])
@@ -216,9 +216,10 @@ static func property_infos(obj: Object) -> Array:
 			continue
 		if usage & PROPERTY_USAGE_INTERNAL:
 			continue
-		if not (usage & PROPERTY_USAGE_EDITOR):
-			continue
-		if not (usage & PROPERTY_USAGE_STORAGE):
+		# Requiring STORAGE hides derived properties: a Control stores offsets, not its rect,
+		# so position/size (and anchors_preset) are EDITOR-only. They are settable and often
+		# exactly what a UI edit needs.
+		if not include_all and not (usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE)):
 			continue
 		var prop_name := String(prop["name"])
 		if prop_name.begins_with("_") or DENY_PROPS.has(prop_name):
@@ -227,8 +228,8 @@ static func property_infos(obj: Object) -> Array:
 	return out
 
 
-static func find_property(obj: Object, name: String) -> Dictionary:
-	for prop in property_infos(obj):
+static func find_property(obj: Object, name: String, include_all := true) -> Dictionary:
+	for prop in property_infos(obj, include_all):
 		if String(prop["name"]) == name:
 			return prop
 	return {}

@@ -38,6 +38,12 @@ the root). `<target>` is a node path or a `res://x.tres` resource.
 | `prop set <target> <name> <value> [--as gd\|json\|ref\|expr]` | write one |
 | `prop reset <target> <name>` | restore the default |
 
+Layout properties of a `Control` are writable even though Godot stores offsets:
+`prop set Panel position 'Vector2(24, 32)'` and `prop set Panel size 'Vector2(200, 100)'` end up
+as `offset_*` in the `.tscn`. `anchors_preset` is read-only — write `anchor_left`, `anchor_top`,
+`anchor_right`, `anchor_bottom` (and the offsets) instead. Add `--all` to `prop list` for
+properties the inspector hides (`global_position`, …).
+
 `--as` modes: `gd` = `str_to_var` (`Vector2(1, 2)`, `Color(1,0,0,1)`, `[1,2]`), `json` = parse
 then coerce, `ref` = `load()` a `res://` path, `expr` = evaluate a GDScript expression.
 

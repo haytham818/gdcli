@@ -375,6 +375,9 @@ enum PropCommand {
         /// Only non-default properties
         #[arg(long)]
         changed: bool,
+        /// Also list properties the inspector hides, such as Control.global_position
+        #[arg(long)]
+        all: bool,
     },
     /// Read one property
     Get {
@@ -1067,7 +1070,8 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                     target,
                     filter,
                     changed,
-                } => commands::prop::list(target, filter.as_deref(), *changed),
+                    all,
+                } => commands::prop::list(target, filter.as_deref(), *changed, *all),
                 PropCommand::Get { target, name } => commands::prop::get(target, name),
                 PropCommand::Set {
                     target,

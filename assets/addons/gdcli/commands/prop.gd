@@ -38,8 +38,9 @@ static func _list(args: Dictionary, _opts: Dictionary) -> Dictionary:
 	var filter := _s(args, "filter").to_lower()
 	var changed := bool(args.get("changed", false))
 
+	var include_all := bool(args.get("all", false))
 	var props: Array = []
-	for prop in M.property_infos(obj):
+	for prop in M.property_infos(obj, include_all):
 		var name := String(prop["name"])
 		if filter != "" and not name.to_lower().contains(filter):
 			continue
@@ -52,6 +53,7 @@ static func _list(args: Dictionary, _opts: Dictionary) -> Dictionary:
 			"type": M.type_name(prop),
 			"value_text": M.value_text(value),
 			"is_default": is_default,
+			"stored": bool(int(prop["usage"]) & PROPERTY_USAGE_STORAGE),
 		})
 	return M.ok({"target": lookup["addr"], "props": props})
 

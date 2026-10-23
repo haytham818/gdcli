@@ -200,13 +200,18 @@ Rules: exactly one of `type`/`script`; a script target is instantiated with
 
 | cmd | args | data |
 | --- | --- | --- |
-| `prop.list` | `{"target","filter"?,"changed":bool=false}` | `{"target","props":[prop]}` |
+| `prop.list` | `{"target","filter"?,"changed":bool=false,"all":bool=false}` | `{"target","props":[prop]}` |
 | `prop.get` | `{"target","name"}` | `{"name","type","value","value_text","is_default"}` |
 | `prop.set` | `{"target","name","value","as"?}` | `{"name","type","value_text"}` |
 | `prop.reset` | `{"target","name"}` | `{}` |
 
-`prop` = `{"name","type","value_text","is_default"}`. `prop.set` validates that the
+`prop` = `{"name","type","value_text","is_default","stored"}`. `prop.set` validates that the
 property exists and that the parsed value converts to its type before mutating.
+
+The default listing keeps properties that are either stored or editor-visible, which includes
+derived ones: a `Control` stores `offset_*`, yet `position`, `size` and friends are listed and
+writable, and come back as offsets in the `.tscn`. `all` also includes properties the inspector
+hides (`global_position`, …). `prop.get/set/reset` accept anything in either set.
 
 ## 8. CLI-side conventions
 

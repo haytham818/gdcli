@@ -270,6 +270,19 @@ GDCLI_SKILL_CMD="sh $WORK/fake-skill.sh" "$BIN" plugin install --no-skill --proj
 [[ ! -f "$SKILL_LOG" ]] || fail "--no-skill still ran the installer"
 echo "    installer skipped for --no-skill"
 
+step "ui layout properties"
+"$BIN" node add Control --name Panel --project "$WORK" >/dev/null
+"$BIN" prop list Panel --project "$WORK" --quiet | grep -qx position || fail "Control.position is not listed"
+"$BIN" prop set Panel position 'Vector2(24, 32)' --project "$WORK" >/dev/null
+POS="$("$BIN" prop get Panel position --quiet --project "$WORK")"
+[[ "$POS" == "Vector2(24, 32)" ]] || fail "Control position roundtrip got '$POS'"
+"$BIN" prop set Panel size 'Vector2(200, 100)' --project "$WORK" >/dev/null
+"$BIN" prop list Panel --all --project "$WORK" --quiet | grep -qx global_position || fail "--all does not list global_position"
+"$BIN" scene save --project "$WORK" >/dev/null
+CUR="$("$BIN" editor status --project "$WORK" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["edited_scene"].replace("res://", "", 1))')"
+grep -q "offset_right = 224.0" "$WORK/$CUR" || fail "the Control rect was not saved as offsets in $CUR"
+echo "    Control position/size round-trip through offsets"
+
 step "input map"
 "$BIN" project input add-action jump --deadzone 0.2 --project "$WORK" | sed 's/^/    /'
 "$BIN" project input add-event jump --key Space --modifiers shift --project "$WORK" | sed 's/^/    /'
