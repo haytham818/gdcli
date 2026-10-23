@@ -1,7 +1,7 @@
 extends RefCounted
 
 # game.* reads what the EditorDebuggerPlugin captured from running games, and
-# (M4) forwards commands to the `GdcliRuntime` autoload inside the game over the
+# Forwards commands to the `GdcliRuntime` autoload inside the game over the
 # live debugger session.
 
 const M = preload("meta.gd")

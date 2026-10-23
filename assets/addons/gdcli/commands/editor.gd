@@ -545,7 +545,7 @@ static func _stop(opts: Dictionary) -> Dictionary:
 	return M.ok({"playing": EditorInterface.is_playing_scene()})
 
 
-# --- command palette (M8) ----------------------------------------------------
+# --- command palette ----------------------------------------------------
 
 # The palette has no read API, so the plugin's own registry answers. Invoking the
 # registered Callable is exactly what the palette does on a click; the screenshot

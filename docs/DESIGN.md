@@ -5,59 +5,62 @@ patching `.tscn` text or installing an MCP server that floods the prompt with to
 
 ## Why not the alternatives
 
-* **MCP server** — the tool schemas (dozens of them) sit in the conversation forever. The
-  transport is not the problem; the surface is. A CLI keeps the surface in the shell.
-* **Editing `.tscn` by hand** — inheritance and instanced scenes are not representable as
-  text patches without a lossless parser, and a bad patch makes the engine refuse the file.
-* **Runtime `PackedScene` round-trip** (`instantiate()` + `pack()`) — flattens the inherited
-  root (godot#27243) and loses instance ownership. Verified locally.
-* **PTY/AT-SPI/xdotool automation** — Godot's AccessKit tree exposes editor chrome only
-  (buttons, tabs, dock shells). Verified on 4.7.2: 107 nodes, zero `tree item`, zero
-  `menu item`, no `EditableText`. Scene content and menus are invisible to it.
-* **PTY-free GUI process injection** — the release binary is fully stripped (`nm` symtab 0),
-  so `gdb call` needs a per-version C++ shim; and injection only reaches the same
-  `EditorInterface` API a plugin already has.
+### **MCP server**  
+the tool schemas (dozens of them) sit in the conversation forever. The transport is not the problem; the surface is. A CLI keeps the surface in the shell.
+
+### **Editing `.tscn` by hand**  
+inheritance and instanced scenes are not representable as text patches without a lossless parser, and a bad patch makes the engine refuse the file.
+
+### **Runtime `PackedScene` round-trip** (`instantiate()` + `pack()`) 
+flattens the inherited root (godot#27243) and loses instance ownership.
+
+### **PTY/AT-SPI/xdotool automation**  
+Godot's AccessKit tree exposes editor chrome only (buttons, tabs, dock shells) on current release (4.7.2) : 107 nodes, zero `tree item`, zero `menu item`, no `EditableText`. Scene content and menus are invisible to it.
+
+### **PTY-free GUI process injection**  
+the release binary is fully stripped (`nm` symtab 0), so `gdb call` needs a per-version C++ shim; and injection only reaches the same `EditorInterface` API a plugin already has.
 
 A plugin is the only supported way in, and it is the cheapest of all of them.
 
 ## Architecture
 
 ```
-agent ──▶ gdcli (Rust, single binary) ──NDJSON/tcp 127.0.0.1──▶ EditorPlugin (GDScript)
+agent/human ──▶ gdcli (Rust) ──NDJSON/tcp 127.0.0.1 ──▶ EditorPlugin (GDScript)
                                                                   ├─ EditorInterface
                                                                   ├─ EditorUndoRedoManager
                                                                   └─ EditorFileSystem
-```
 
-* Rust 2024 edition. Dependencies: `clap` (derive), `serde`, `serde_json`. No async — one
-  blocking loopback connection with a line protocol is enough and keeps lifetimes simple.
-* Plugin assets are embedded in the binary with `include_str!` and installed by
-  `gdcli plugin install`, which also enables them in `project.godot`'s `[editor_plugins]`.
-  First install requires an editor restart.
-* Protocol: see `docs/PROTOCOL.md`.
+                     opt-in: ──gdcli:req/gdcli:res (debugger)──▶ GdcliRuntime (game autoload)
+```
 
 ## Layout
 
 ```
 assets/addons/gdcli/         GDScript plugin, embedded into the binary
-  plugin.cfg
-  plugin.gd                  lifecycle, socket, main-thread queue, dispatch
-  commands/{meta,editor,scene,node,prop}.gd
-src/                         CLI
+  plugin.cfg                 name, version, entry script
+  plugin.gd                  lifecycle, socket, main-thread queue, deferred replies
+  debug_capture.gd           EditorDebuggerPlugin: ring buffer and game-message routing
+  runtime/gdcli_runtime.gd   in-game autoload: bridge, log capture, screenshots
+  commands/*.gd              one module per command group (meta, editor, scene, node, prop,
+                             signal, group, res, project, fs, script, game, input)
+src/                         CLI: clap surface, wire client, installers, renderers
 docs/                        design + protocol
-tests/fixture/               throwaway Godot project (instanced scene) for E2E
-scripts/e2e.sh               launch editor, run commands, assert the saved .tscn
+tests/fixture/               throwaway Godot project (instanced scene, prints on run)
+scripts/e2e.sh               headless and xvfb end-to-end suite
+scripts/install.{sh,ps1}     release installers
 ```
 
-## What the editor API actually can and cannot do (4.7.2)
+## What the editor API actually can and cannot do
+
+By dumping the `ClassDB`, we can see what the editor API actually can and cannot do.
 
 Available: scene open/close/save/save-as/reload, open + unsaved scene roots, node
-add/remove/reparent/duplicate/rename, property read/write/reset on any object (nodes and
-`res://` resources), signal connect/disconnect, groups, instancing a sub-scene as a child,
-script check/open/goto, project settings, autoloads, input map, plugin enable/disable,
-filesystem scan/reimport, editor UI (main screen, bottom panel, selection, inspector,
-toasts, play/stop, 2D/3D viewport screenshots), and read-only access to a running game's
-output and remote tree via `EditorDebuggerPlugin._capture`.
+add/remove/reparent/duplicate/rename/instance, property read/write/reset on any object (nodes
+and `res://` resources), signal connect/disconnect, groups, resource create/inspect/duplicate,
+script check/open/save, project settings, autoloads, input map, plugin enable/disable,
+filesystem scan/reimport, editor UI (main screen, selection, inspector, toasts, play/stop,
+2d/3d/whole-window screenshots), writes to the command palette, and — through the opt-in game
+runtime — the running game's scene tree, properties, console output and screenshots.
 
 Not possible, and therefore not exposed:
 
@@ -67,61 +70,62 @@ Not possible, and therefore not exposed:
 3. **Gizmo drags and viewport picking.** Set transforms as properties instead.
 4. **Editing a non-current open scene.** `get_open_scene_roots()` reads them; writing means
    switching the active scene, which is visible to the user.
-5. **Sending commands to the running game** needs a project-side autoload. Implemented in M4
-   as an opt-in (`gdcli runtime install`): the editor sends `gdcli:req`, `GdcliRuntime`
-   answers `gdcli:res`. Without it every `game.*` call is `NO_GAME`.
-6. **Reading a local game's stdout.** On 4.7.2 the debugger only carries `game_view:*`
-   messages; the game's `print()` goes to the editor console, so `game.logs` stays empty
-   unless a runtime autoload forwards it. Measured with `_capture` instrumented.
+5. **Sending commands to the running game** needs a project-side autoload, installed with
+   `gdcli runtime install`: the editor sends `gdcli:req` and `GdcliRuntime` answers
+   `gdcli:res`. Without it every `game.*` call is `NO_GAME`.
+6. **Reading a local game's stdout through the debugger.** 4.7 only carries `game_view:*`
+   messages, so the runtime installs a `Logger` and forwards the game's own output; that is
+   what `game.logs` reads. Without the autoload it stays empty.
 7. **Switching built-in bottom panels.** Only panels owned by the plugin are addressable via
    `EditorPlugin`; the rest would need UI-tree spelunking that breaks across versions.
-8. **Command palette listing/execution of *other* entries.** `EditorCommandPalette` exposes only
-   `add_command`/`remove_command`, so the plugin registers its own entries (M8) and can list
-   only those.
+8. **Listing or invoking someone else's command palette entries.** `EditorCommandPalette`
+   exposes only `add_command`/`remove_command`, so the plugin registers and lists its own.
 
 Side effects to document for users: saving through the engine rewrites the scene header
 (adds `unique_id`, reorders uids), so diffs are noisy; the plugin's undo entries appear in
 the user's history as `gdcli: <cmd>`.
 
-## Milestones
+## Features
 
-* **M1** (shipped, plugin 0.2.0) — `plugin install/status`, `editor status`,
-  `editor undo/redo/history`, `scene open/save/save-as/reload/tree/roots`,
-  `node add/rm/mv/dup/rename`, `prop get/set/list/reset`, `raw`, `batch`, dry-run.
-* **M2** (shipped, plugin 0.3.0) — `signal list/connect/disconnect`, `group list/add/remove`,
-  `node instance`, `res new/info/duplicate`, `project setting get/set`,
-  `project autoload list/add/remove`, `fs status/scan/reimport` (+ `--wait` polling),
-  `script check/open/files/save-all`. Input-map editing moved to M3: binding an
-  `InputEvent` needs its own serialization design, not a passthrough.
-* **M3** (shipped, plugin 0.4.0) — `editor select/inspect/main-screen/toast/screenshot/
-  play/stop`, play `--wait`, `game status/logs`. Screenshots need a real renderer: headless
-  returns `NO_API`, `xvfb-run -a -s "-screen 0 1600x1000x24" godot --editor ...` produces
-  real 1844x1189 sub-viewport and 2560x1398 whole-window PNGs. Game *output* is not
-  observable on 4.7 (see below).
-* **M8** (shipped, plugin 0.9.0) — three `gdcli:` entries in the editor command palette so a
-  human can trigger the same actions the CLI drives, plus `editor palette list/run` for agents
-  and tests. The palette is write-only, so only gdcli's own entries are listed.
-* **M7** (shipped, plugin 0.8.0) — `game logs` captures the game's own `print`/`printerr`/
-  `push_error`/`push_warning` stream through a `Logger` installed by the runtime autoload,
-  since 4.7's debugger carries none of it. `Logger` + `OS.add_logger` is the mechanism;
-  entries are batched once per frame to avoid re-entering the engine's logging path.
-* **M6** (shipped, plugin 0.7.0) — `project input` (actions and key/mouse/joypad
-  bindings) through a small event DSL; the engine owns `project.godot` serialization.
-* **M5** (shipped, plugin 0.6.0) — `project plugins list/enable/disable`,
-  `game screenshot`, and `plugin install --private` (gitignored addon).
-* **M4** (shipped, plugin 0.5.0) — `runtime install/uninstall/status` and `game
-  ping/tree/get/set/eval` over an `EngineDebugger` capture in the running game, with id
-  correlation and a 3 s timeout in the editor. Opt-in: the autoload is a project file.
+**Scene editing** — `scene open/save/save-as/reload/roots/tree`, `node
+add/rm/mv/dup/rename/instance`, property `get/set/list/reset` on nodes and `res://`
+resources, `signal connect/disconnect`, `group add/remove`, `editor undo/redo/history`, and
+`--dry-run` on every mutation.
 
-  Tooling note: the editor's command-line scene argument races the first filesystem scan, so
-  a client that connects as soon as `endpoint.json` exists may see no edited scene yet —
-  `gdcli scene open` (or a retry) is the reliable path.
+**Project data** — project settings, autoloads, the input map (actions plus key, mouse and
+joypad bindings), plugin enable/disable, filesystem scan/reimport, and script
+check/open/save.
 
-  Tooling note for GUI tests: run the editor with `WAYLAND_DISPLAY` unset and
-  `--display-driver x11` under `xvfb-run`. With `WAYLAND_DISPLAY` inherited, the editor runs
-  on the real Wayland session and the game it spawns (`--display-driver wayland --wid ...`)
-  never initialises its scene tree, so the runtime autoload never runs and every `game.*`
-  call times out.
+**Editor UI** — selection, inspector, main screen switching, toasts, 2d/3d/whole-window
+screenshots, and play/stop with `--wait`.
+
+**Running game** (opt-in, `gdcli runtime install`) — `game ping/tree/get/set/eval`,
+`screenshot`, and captured `logs`; requests time out after 3 s instead of blocking the
+editor.
+
+**For agents** — `--json` and `--quiet` on everything, `batch` for NDJSON pipelines, `raw`
+for commands the CLI does not wrap, one undo action per request, and `--private` to keep the
+plugin out of a shared repository.
+
+**For humans** — a few `gdcli:` entries in the editor's command palette that trigger the same
+actions from the editor side.
+
+## Testing
+
+`scripts/e2e.sh` drives a real editor: a headless pass covers commands and asserts the saved
+`.tscn` keeps `instance=ExtResource` and its overrides; `E2E_GUI=1` adds an xvfb pass that
+checks screenshots are real PNGs, the game runtime round-trips, and game output is captured.
+CI runs it together with `cargo fmt`/`clippy`/`test` and `cargo test` on macOS and Windows.
+
+Tooling note: the editor's command-line scene argument races the first filesystem scan, so a
+client that connects as soon as `endpoint.json` exists may see no edited scene yet —
+`gdcli scene open` (or a retry) is the reliable path.
+
+Tooling note for GUI tests: run the editor with `WAYLAND_DISPLAY` unset and
+`--display-driver x11` under `xvfb-run`. With `WAYLAND_DISPLAY` inherited, the editor runs on
+the real Wayland session and the game it spawns (`--display-driver wayland --wid ...`) never
+initialises its scene tree, so the runtime autoload never runs and every `game.*` call times
+out.
 
 ## Conventions
 

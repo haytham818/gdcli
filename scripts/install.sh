@@ -269,7 +269,7 @@ main() {
     mkdir -p "$WORKDIR/extract"
     tar -xzf "$WORKDIR/$archive_name" -C "$WORKDIR/extract" ||
         err "could not extract $archive_name"
-    # Archives have shipped both flat and wrapped in a single directory; accept either.
+    # Archives may be flat or wrapped in a single directory; accept either.
     src="$WORKDIR/extract"
     if [ ! -f "$src/$BIN_NAME" ]; then
         found="$(find "$WORKDIR/extract" -maxdepth 2 -type f -name "$BIN_NAME" | head -n 1)"

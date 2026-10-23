@@ -17,7 +17,7 @@ The plugin writes an endpoint file when it comes up:
 ```json
 {
   "protocol": 1,
-  "plugin_version": "0.2.0",
+  "plugin_version": "0.9.1",
   "port": 41234,
   "token": "9f2c...64 hex chars",
   "pid": 745244,
@@ -57,7 +57,7 @@ reply when the token is wrong.
 ```json
 {"ok": true, "data": {
   "protocol": 1,
-  "plugin_version": "0.2.0",
+  "plugin_version": "0.9.1",
   "godot": "4.7.2-stable",
   "project": "/abs/path",
   "capabilities": ["scene.open", "node.add", "..."]
@@ -128,7 +128,7 @@ The CLI passes the value through as a string plus a mode; the engine parses it.
 | `ref` | treated as a `res://` path and `load()`ed |
 | `expr` | `Expression.parse/execute` in plugin context — arbitrary code, documented as unsafe |
 
-## 7. Commands (M1)
+## 7. Core commands
 
 `data` shapes are exact; extra fields may be added later, never removed.
 
@@ -153,9 +153,8 @@ Undo and redo act on the **currently edited scene's** history:
 `EditorUndoRedoManager` itself exposes no `undo()`/`redo()`; only the per-object `UndoRedo`
 returned by `get_history_undo_redo()` does. `count`: missing or `null` → 1, any number → truncated and clamped to 1..100, any other JSON
 type → `BAD_ARGS`. `history.actions` is ordered by **ascending** `index` (oldest first) and
-holds at most `limit` of the most recent actions. `dry_run` returns
-``{"would_undo":[names...]}` / `{"would_redo":[names...]}` (only those keys, not the normal
-`data` of §4) and mutates nothing. `opts.undo` is
+holds at most `limit` of the most recent actions. `dry_run` returns `{"would_undo":[names...]}` or `{"would_redo":[names...]}` (only those
+keys, not the normal `data` of §4) and mutates nothing. `opts.undo` is
 ignored here — an undo is not itself undoable. No edited scene → `NO_SCENE`.
 
 ### scene
@@ -219,7 +218,7 @@ property exists and that the parsed value converts to its type before mutating.
   in order, on a single connection.
 * On a `4` exit the CLI suggests `gdcli plugin upgrade`.
 
-## 9. Commands (M2, plugin 0.3.0)
+## 9. Scenes, project data and scripts
 
 Same envelope and rules as §4. `opts.undo` applies only where noted; resource, project,
 filesystem and script commands are not undoable and ignore it.
@@ -308,7 +307,7 @@ Scanning is asynchronous and never blocks the editor main thread. `gdcli --wait`
 script parses, not where. Print the editor's error panel / use `godot --check-only` for
 column-level detail.
 
-## 10. Commands (M3, plugin 0.4.0)
+## 10. Editor UI, screenshots and play control
 
 ### editor (additional)
 
@@ -348,28 +347,13 @@ Screenshot rules, all verified on 4.7.2:
 
 ### game
 
-| cmd | args | data |
-| --- | --- | --- |
-| `game.status` | — | `{"sessions":int,"active":bool}` |
-| `game.logs` | `{"limit":int=200,"clear":bool=false}` | `{"lines":[{"kind":"output"\|"error","text","session":int}]}` |
-| `game.clear` | — | `{}` |
+`game.*` commands are specified where they belong: the debugger bridge in §11 (ping, tree,
+get, set, eval), screenshots in §12, and logs/`status`/`clear` in §14. Nothing about the
+running game is defined in this section.
 
-The plugin registers an `EditorDebuggerPlugin` and keeps a ring buffer (last 500 entries) fed
-by `_capture`. `game.logs` with no debug session is `{"lines":[]}`, not an error.
+## 11. Running game bridge
 
-Known engine behaviour (measured on 4.7.2, `_capture` instrumented): the debugger delivers
-only `game_view:*` messages. A locally launched game's `print()` and runtime errors go to the
-editor's stdout/console and **never** arrive as `output`/`error`/`stack_dump` messages, so
-`game.logs` is empty for local runs. The capture code stays because the protocol is still
-correct for engines/sessions that do send them; do not read "empty" as "the game printed
-nothing". Getting real game output needs a runtime autoload or an owned stdout pipe (M4).
-
-Out of scope for M3: switching built-in bottom panels (no API; only panels owned by the
-plugin are addressable) and the remote scene tree.
-
-## 11. Commands (M4, plugin 0.5.0)
-
-M4 is opt-in: it needs the `GdcliRuntime` autoload inside the game, installed with
+The bridge is opt-in: it needs the `GdcliRuntime` autoload inside the game, installed with
 `gdcli runtime install` (which writes `res://addons/gdcli/runtime/gdcli_runtime.gd` and adds
 the autoload through `EditorPlugin.add_autoload_singleton`). Without it every `game.*` request
 below answers `NO_GAME`.
@@ -409,7 +393,7 @@ arbitrary code inside the game and is documented as such — it is never implici
 The runtime must be inert when no debugger is attached (`EngineDebugger.is_active()` false)
 and must never print to stdout on its own.
 
-## 12. Commands (M5, plugin 0.6.0)
+## 12. Plugin toggles and game screenshots
 
 ### project (additional)
 
@@ -463,7 +447,7 @@ absent, idempotent) so the installed files never reach a shared repository. The
 without the addon will see a missing-plugin warning, so either everyone runs
 `gdcli plugin install` or the addon is committed instead.
 
-## 13. Commands (M6, plugin 0.7.0)
+## 13. Input map
 
 The input map is project settings, so the plugin only converts a small event DSL to real
 `InputEvent` objects and lets the engine serialize them (`ProjectSettings.set_setting(
@@ -516,7 +500,7 @@ array, which is the address `input.event.remove` expects.
 * A key event whose on-disk `keycode` and `physical_keycode` are both non-zero cannot be
   expressed in the DSL, so it round-trips as `{"raw": ...}`.
 * `input.event.add` accepts `index` 0..len (len means append); `event.remove` needs 0..len-1.
-* Forward-looking note: `InputEventScreenTouch.is_match(other, true)` is false even for an
+* Note: `InputEventScreenTouch.is_match(other, true)` is false even for an
   identical event on 4.7.2, so raw touch events are not duplicate-checked.
 * Action names must be non-empty and must not start with `input/`. Adding an existing action
   or renaming onto an existing one is `BAD_ARGS`.
@@ -545,7 +529,7 @@ gdcli project input add-event <action> (--key K | --physical-key K | --mouse B |
 gdcli project input remove-event <action> --index N
 ```
 
-## 14. Commands (M7, plugin 0.8.0)
+## 14. Game log capture
 
 `game.logs` finally has content: 4.7's debugger only carries `game_view:*`, so the **runtime**
 captures the game's own log stream and forwards it.
@@ -586,6 +570,7 @@ The editor's `debug_capture.gd` appends those entries to the same 500-entry ring
 | --- | --- | --- |
 | `game.logs` | `{"limit":int=200,"clear":bool=false,"kind"?:"output"\|"error"\|"warning"}` | `{"lines":[{"kind","text","session"}]}` |
 | `game.status` | — | `{"sessions":int,"active":bool,"capturing":bool}` |
+| `game.clear` | — | `{}` |
 
 `capturing` is true when the runtime has a logger installed. `game.status` asks the runtime
 via `game.ping` when a session is active and falls back to `capturing: false` after ~1 s when
@@ -603,7 +588,7 @@ CLI:
 gdcli game logs [--limit N] [--clear] [--kind output|error|warning]
 ```
 
-## 15. Commands (M8, plugin 0.9.0)
+## 15. Command palette
 
 The editor's command palette (`EditorCommandPalette`) can only be written to:
 `add_command(name, key_name, callable, shortcut_text)` and `remove_command(key_name)` — there is

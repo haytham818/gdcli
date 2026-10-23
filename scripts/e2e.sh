@@ -139,7 +139,7 @@ step "undo dry run"
 "$BIN" editor undo --dry-run --project "$WORK" | sed 's/^/    /'
 "$BIN" scene tree --project "$WORK" --quiet | grep -qx 'Clock' || fail "--dry-run undo mutated the scene"
 
-step "M2: signals and groups"
+step "signals and groups"
 "$BIN" node add Button --name Btn --project "$WORK" >/dev/null
 "$BIN" signal connect Btn pressed Inst/Label set_text --project "$WORK" | sed 's/^/    /'
 "$BIN" signal list Btn --connected-only --project "$WORK" | sed 's/^/    /'
@@ -152,13 +152,13 @@ CODE=$?
 set -e
 [[ $CODE -eq 3 ]] || fail "bad signal should exit 3, got $CODE"
 
-step "M2: instance, resources"
+step "instance and resources"
 "$BIN" node instance res://sub.tscn --name Sub2 --project "$WORK" | sed 's/^/    /'
 "$BIN" res new Gradient res://new.tres --project "$WORK" | sed 's/^/    /'
 "$BIN" res duplicate res://new.tres res://copy.tres --project "$WORK" | sed 's/^/    /'
 "$BIN" res info res://copy.tres --project "$WORK" | sed 's/^/    /'
 
-step "M2: project + script + fs"
+step "project, script and filesystem"
 "$BIN" project setting set application/config/description "gdcli fixture" --project "$WORK" >/dev/null
 DESC="$("$BIN" project setting get application/config/description --quiet --project "$WORK")"
 [[ "$DESC" == '"gdcli fixture"' || "$DESC" == "gdcli fixture" ]] || fail "setting roundtrip got $DESC"
@@ -174,7 +174,7 @@ set -e
 "$BIN" script files --project "$WORK" | sed 's/^/    /'
 "$BIN" fs scan --wait --project "$WORK" | sed 's/^/    /'
 
-step "M2: save and assert"
+step "save and assert"
 "$BIN" scene save --project "$WORK" >/dev/null
 python3 - "$WORK" <<'PY'
 import sys, pathlib
@@ -197,10 +197,10 @@ for res in ("new.tres", "copy.tres"):
 proj = (work / "project.godot").read_text()
 if "gdcli fixture" not in proj:
     raise SystemExit("project.godot lost the setting:\n%s" % proj)
-print("    M2 assertions ok:", ", ".join(checks), "+ resources + project settings")
+print("    assertions ok:", ", ".join(checks), "+ resources + project settings")
 PY
 
-step "remaining M1 surface"
+step "remaining surface"
 "$BIN" prop list Hero --changed --project "$WORK" --quiet | sed 's/^/    /'
 "$BIN" prop set Hero position 'Vector2(5, 6)' --project "$WORK" >/dev/null
 "$BIN" prop reset Hero position --project "$WORK" | sed 's/^/    /'
@@ -221,7 +221,7 @@ step "save-as + roots + reload"
 "$BIN" scene tree --project "$WORK" --quiet | sed 's/^/    /'
 grep -q 'instance=ExtResource' "$WORK/copies/main2.tscn" || fail "save-as flattened the instance"
 
-step "M5: plugin toggles"
+step "plugin toggles"
 PLUGINS="$("$BIN" project plugins list --project "$WORK" --json)"
 python3 - "$PLUGINS" <<'PY'
 import json, sys
@@ -239,7 +239,7 @@ set -e
 [[ $CODE -eq 3 ]] || fail "enabling an unknown plugin should exit 3, got $CODE"
 "$BIN" project plugins disable probe --project "$WORK" | sed 's/^/    /'
 
-step "M5: private install"
+step "private install"
 PW="$WORK/private"
 rm -rf "$PW"; mkdir -p "$PW"
 cp "$REPO"/tests/fixture/project.godot "$PW"/
@@ -250,7 +250,7 @@ grep -qx 'addons/gdcli/' "$PW/.gitignore" || fail ".gitignore missing addons/gdc
 "$BIN" plugin install --private --project "$PW" >/dev/null
 [[ "$(grep -c '^addons/gdcli/$' "$PW/.gitignore")" == "1" ]] || fail ".gitignore entry duplicated"
 
-step "M6: input map"
+step "input map"
 "$BIN" project input add-action jump --deadzone 0.2 --project "$WORK" | sed 's/^/    /'
 "$BIN" project input add-event jump --key Space --modifiers shift --project "$WORK" | sed 's/^/    /'
 "$BIN" project input add-event jump --joy-button 0 --project "$WORK" | sed 's/^/    /'
@@ -277,7 +277,7 @@ assert 'jump=' not in text and 'leap=' not in text, "an input action survived re
 print("    input map cleaned up")
 PY
 
-step "M8: command palette"
+step "command palette"
 "$BIN" editor palette list --project "$WORK" | sed 's/^/    /'
 PALETTE="$("$BIN" editor palette list --project "$WORK" --json)"
 python3 - "$PALETTE" <<'PY'
@@ -294,7 +294,7 @@ CODE=$?
 set -e
 [[ $CODE -eq 3 ]] || fail "running an unknown palette entry should exit 3, got $CODE"
 
-step "M3: ui state, play/stop, game read-only"
+step "ui state, play/stop, game read-only"
 "$BIN" editor select Inst --project "$WORK" | sed 's/^/    /'
 "$BIN" editor select Inst Btn --add --project "$WORK" | sed 's/^/    /'
 "$BIN" editor inspect Inst --project "$WORK" | sed 's/^/    /'
@@ -319,7 +319,7 @@ set -e
 grep -qi "display\|xvfb\|headless" "$WORK/shot-err.txt" || fail "screenshot error has no display hint: $(cat "$WORK/shot-err.txt")"
 
 if [[ "${E2E_GUI:-0}" == "1" ]]; then
-	step "M3 GUI (xvfb): screenshots, play, game logs"
+	step "GUI (xvfb): screenshots, play, game logs"
 	GW="$WORK/gui"
 	rm -rf "$GW"; mkdir -p "$GW"
 	cp "$REPO"/tests/fixture/project.godot "$REPO"/tests/fixture/*.tscn "$REPO"/tests/fixture/*.gd "$GW"/
@@ -348,7 +348,7 @@ for name in ("shot2d.png", "shot3d.png", "whole.png"):
     assert w > 100 and h > 100, (name, w, h)
     print("    %s %dx%d ok" % (name, w, h))
 PY
-	step "M8 GUI: palette screenshot"
+	step "GUI: palette screenshot"
 	"$BIN" editor palette run "gdcli: Screenshot 2D view" --project "$GW" | sed 's/^/    /'
 	sleep 2
 	SHOT="$(ls -1t "$GW"/.godot/gdcli/screenshots/shot2d-*.png 2>/dev/null | head -1)"
@@ -362,7 +362,7 @@ assert w > 100 and h > 100, (w, h)
 print("    palette shot %dx%d ok" % (w, h))
 PY
 
-	step "M4 GUI: runtime bridge"
+	step "GUI: runtime bridge"
 	"$BIN" runtime install --project "$GW" | sed 's/^/    /'
 	"$BIN" runtime install --project "$GW" | sed 's/^/    /'
 	"$BIN" editor play --wait --project "$GW" | sed 's/^/    /'

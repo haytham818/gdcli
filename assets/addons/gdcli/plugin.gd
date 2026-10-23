@@ -36,7 +36,7 @@ const ScriptCommands = preload("commands/script.gd")
 const GameCommands = preload("commands/game.gd")
 const DebugCapture = preload("debug_capture.gd")
 
-# Command palette (M8). EditorCommandPalette is write-only, so this list is the
+# Command palette. EditorCommandPalette is write-only, so this list is the
 # only source of truth for `editor.palette.list`; the callables are exactly what
 # the palette holds, so `palette.run` takes the same path as a human click.
 var _palette_entries: Array = []
@@ -187,7 +187,7 @@ func _write_endpoint() -> void:
 	file.close()
 
 
-# --- command palette (M8) ----------------------------------------------------
+# --- command palette ----------------------------------------------------
 #
 # EditorCommandPalette only takes `add_command`/`remove_command`; there is no way
 # to read it back. The registry below is therefore the source of truth for
@@ -537,7 +537,7 @@ func _poll_scene_open(pending: Dictionary) -> Dictionary:
 	return {}
 
 
-# --- runtime bridge (M4) -----------------------------------------------------
+# --- runtime bridge -----------------------------------------------------
 
 # Sends `gdcli:req` over the live debugger session and hands the request to the
 # deferred mechanism: the reply arrives asynchronously through `_capture`.
