@@ -17,7 +17,7 @@ pub mod scene;
 pub mod script;
 pub mod signal;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -110,5 +110,43 @@ pub fn absolute_output(out: &Path) -> Result<String> {
         .map_err(|error| Error::usage(format!("cannot create {}: {error}", parent.display())))?;
     let parent = std::fs::canonicalize(parent)
         .map_err(|error| Error::usage(format!("cannot resolve {}: {error}", parent.display())))?;
-    Ok(parent.join(name).to_string_lossy().into_owned())
+    Ok(without_verbatim_prefix(parent.join(name))
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// `canonicalize` on Windows returns `\\?\D:\...` (and `\\?\UNC\...` for shares). Godot
+/// does not understand those prefixes, so hand the editor a plain path.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::without_verbatim_prefix;
+
+    #[test]
+    fn strips_windows_verbatim_prefixes() {
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\D:\a\b.png")),
+            PathBuf::from(r"D:\a\b.png")
+        );
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\UNC\srv\share\b.png")),
+            PathBuf::from(r"\\srv\share\b.png")
+        );
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from("/tmp/b.png")),
+            PathBuf::from("/tmp/b.png")
+        );
+    }
 }
