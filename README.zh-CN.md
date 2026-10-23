@@ -4,6 +4,8 @@
 
 像手动操作一样，从命令行控制正在运行的 Godot 编辑器。
 
+**文档：<https://haytham818.github.io/gdcli/>**
+
 ## 安装
 
 ```sh

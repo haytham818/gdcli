@@ -345,11 +345,9 @@ Screenshot rules, all verified on 4.7.2:
 `editor.play` returns as soon as the editor reports playing; `gdcli --wait` polls
 `editor.status` every 200 ms up to 30 s. `editor.stop` is idempotent.
 
-### game
-
-`game.*` commands are specified where they belong: the debugger bridge in §11 (ping, tree,
-get, set, eval), screenshots in §12, and logs/`status`/`clear` in §14. Nothing about the
-running game is defined in this section.
+The `game.*` commands live with what they need: the debugger bridge in §11 (ping, tree, get,
+set, eval), screenshots in §12, and logs/`status`/`clear` in §14. Nothing about the running
+game is defined in this section.
 
 ## 11. Running game bridge
 

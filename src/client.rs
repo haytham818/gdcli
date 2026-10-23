@@ -1,5 +1,5 @@
 //! Project discovery, endpoint discovery, the TCP connection and framing
-//! (docs/PROTOCOL.md §1–§4).
+//! (docs/protocol.md §1–§4).
 
 use std::env;
 use std::fs;

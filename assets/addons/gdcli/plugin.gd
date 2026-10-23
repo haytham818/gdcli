@@ -2,7 +2,7 @@
 extends EditorPlugin
 
 # gdcli editor bridge: NDJSON over a loopback TCP socket, executed on the editor
-# main thread. See docs/PROTOCOL.md. A malformed request must never take the
+# main thread. See docs/protocol.md. A malformed request must never take the
 # editor down, because that takes the user's unsaved work with it.
 
 const PROTOCOL := 1

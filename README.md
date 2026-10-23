@@ -4,6 +4,8 @@ English | [中文](README.zh-CN.md)
 
 Control a running Godot editor from the command line, just as you would by hand.
 
+**Documentation: <https://haytham818.github.io/gdcli/>**
+
 ## Install
 
 ```sh

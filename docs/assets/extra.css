@@ -1,0 +1,40 @@
+/* Godot's blue as the brand colour, in both schemes. */
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #478cbf;
+  --md-primary-fg-color--light: #6ba6d3;
+  --md-primary-fg-color--dark: #2f6f9c;
+  --md-accent-fg-color: #2f6f9c;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #478cbf;
+  --md-accent-fg-color: #8ec5e8;
+}
+
+/* The repo widget's star/fork counters are noise on a young project. */
+.md-source__facts {
+  display: none;
+}
+
+/* Long command lines are common; keep them readable and copyable. */
+.md-typeset code {
+  font-size: 0.82em;
+}
+
+.md-typeset table:not([class]) th {
+  white-space: nowrap;
+}
+
+/* Identifiers such as GDCLI_INSTALL_DIR must never break mid-token. */
+.md-typeset table:not([class]) td code {
+  white-space: nowrap;
+}
+
+.md-typeset__table {
+  overflow-x: auto;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.5rem;
+}

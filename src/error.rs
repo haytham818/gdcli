@@ -1,4 +1,4 @@
-//! Errors and their exit codes (see docs/PROTOCOL.md §8).
+//! Errors and their exit codes (see docs/protocol.md §8).
 
 use std::fmt;
 

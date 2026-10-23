@@ -4,3 +4,7 @@ tests/fixture/addons/
 tests/fixture/*.import
 __pycache__/
 *.pyc
+/site/
+.venv/
+.cache/
+.openchamber/
