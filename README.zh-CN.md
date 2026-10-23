@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/haytham818/gdcli/main/docs/assets/logo.svg" width="96" alt="gdcli">
+</p>
+
 # gdcli
 
 [English](README.md) | 中文
