@@ -1,0 +1,231 @@
+# Release pipeline.
+#
+# Publishing to crates.io is opt-in: add a repository secret named
+# CARGO_REGISTRY_TOKEN (a crates.io API token with publish rights for `gdcli`).
+# Without it the `publish-crates` job stays skipped and only GitHub Release
+# assets are produced. Never call `cargo publish` twice for the same version -
+# bump Cargo.toml (and the plugin.cfg version) before tagging the next release.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release (e.g. v0.9.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify tag == crate version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Compare tag with Cargo.toml
+        id: check
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read [package] version from Cargo.toml"
+            exit 1
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::tag '$TAG' must be of the form v<version>"; exit 1 ;;
+          esac
+          tag_version="${TAG#v}"
+          if [ "$tag_version" != "$version" ]; then
+            echo "::error::tag '$TAG' does not match crate version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "releasing gdcli $version from $TAG"
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: [verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          # Both macOS targets build on the arm64 image: the Apple toolchain
+          # cross-compiles x86_64, and the macos-13 Intel image is retired.
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          name="gdcli-$VERSION-$TARGET"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/gdcli" "dist/$name/"
+          cp README.md "dist/$name/"
+          if [ -f LICENSE ]; then cp LICENSE "dist/$name/"; fi
+          # Flat archive: the installers look for the binary at the root.
+          tar -czf "dist/$name.tar.gz" -C "dist/$name" $(cd "dist/$name" && ls)
+          rm -rf "dist/$name"
+          ( cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "gdcli-$env:VERSION-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item "target/$env:TARGET/release/gdcli.exe" "dist/$name/"
+          Copy-Item "README.md" "dist/$name/"
+          if (Test-Path LICENSE) { Copy-Item LICENSE "dist/$name/" }
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force "dist/$name"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "dist/$name.zip.sha256" -Value "$hash  $name.zip" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdcli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish GitHub release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The installers live in scripts/ and may not exist in every checkout; only
+      # pass the ones that are present so the upload never fails on a missing path.
+      - name: Collect assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "files<<GDCLI_ASSETS_EOF"
+            echo "dist/*.tar.gz"
+            echo "dist/*.zip"
+            echo "dist/*.sha256"
+            echo "dist/SHA256SUMS"
+            for f in scripts/install.sh scripts/install.ps1; do
+              if [ -f "$f" ]; then echo "$f"; fi
+            done
+            echo "GDCLI_ASSETS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Combined SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sums=(dist/*.sha256)
+          if [ "${#sums[@]}" -eq 0 ]; then
+            echo "::error::no per-target checksums were downloaded"
+            exit 1
+          fi
+          cat "${sums[@]}" | sort -k2 > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.verify.outputs.tag }}
+          name: gdcli ${{ needs.verify.outputs.version }}
+          files: ${{ steps.assets.outputs.files }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: false
+
+  publish-crates:
+    name: cargo publish
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Job-level env so `if:` never has to touch `secrets` directly.
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo publish
+        if: env.CARGO_REGISTRY_TOKEN != ''
+        run: cargo publish

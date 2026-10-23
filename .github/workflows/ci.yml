@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint-test:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      - name: Lint shell scripts
+        run: |
+          bash -n scripts/e2e.sh
+          shellcheck -s sh scripts/install.sh
+
+  e2e-headless:
+    name: e2e (headless editor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Pinned upstream build; the zip holds a single binary.
+      - name: Install Godot 4.7.2
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip"
+          unzip -o -q /tmp/godot.zip -d /tmp/godot
+          sudo install -m 0755 /tmp/godot/Godot_v4.7.2-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+
+      - name: End-to-end suite
+        run: ./scripts/e2e.sh
+
+      - name: Editor log (on failure)
+        if: failure()
+        run: |
+          for f in /tmp/gdcli-e2e/editor.log /tmp/gdcli-e2e/err.txt /tmp/gdcli-e2e/shot-err.txt; do
+            if [ -f "$f" ]; then
+              echo "===== $f"
+              tail -n 100 "$f"
+            fi
+          done
+
+  e2e-gui:
+    name: e2e (xvfb GUI editor)
+    needs: [e2e-headless]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Mesa's llvmpipe + Xvfb give the GUI editor a software GL context on a GPU-less box.
+      - name: Install X11 + Mesa
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1-mesa-dri mesa-vulkan-drivers libasound2t64
+
+      - name: Install Godot 4.7.2
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip"
+          unzip -o -q /tmp/godot.zip -d /tmp/godot
+          sudo install -m 0755 /tmp/godot/Godot_v4.7.2-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+
+      - name: End-to-end suite (GUI)
+        env:
+          E2E_GUI: "1"
+          GODOT_EXTRA_ARGS: "--rendering-driver opengl3"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: ./scripts/e2e.sh
+
+      - name: Editor log (on failure)
+        if: failure()
+        run: |
+          for f in /tmp/gdcli-e2e/editor.log /tmp/gdcli-e2e/gui/editor.log /tmp/gdcli-e2e/shot-err.txt; do
+            if [ -f "$f" ]; then
+              echo "===== $f"
+              tail -n 100 "$f"
+            fi
+          done
+
+  portability:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test

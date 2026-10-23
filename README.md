@@ -9,11 +9,36 @@ engine, edits land in your undo history, and nothing is written that Godot canno
 
 ## Install
 
+Three ways, all producing the same single binary:
+
 ```sh
-cargo install --path .
+# 1. from source
+cargo install --path .        # or: cargo install --git https://github.com/haytham818/gdcli
+
+# 2. prebuilt binary (linux/macos)
+curl -fsSL https://github.com/haytham818/gdcli/releases/latest/download/install.sh | sh
+
+# 3. prebuilt binary (windows)
+irm https://github.com/haytham818/gdcli/releases/latest/download/install.ps1 | iex
+```
+
+The installers accept `GDCLI_VERSION` (pin a release), `GDCLI_INSTALL_DIR` (default
+`~/.local/bin` on unix, `%LOCALAPPDATA%\gdcli\bin` on Windows) and verify the download
+against the release's `SHA256SUMS`. `install.sh` also respects `GDCLI_BASE_URL` for mirrors.
+
+Then wire it into a project:
+
+```sh
 gdcli plugin install --project /path/to/game   # writes addons/gdcli and enables it
 # restart the Godot editor once
+gdcli editor status
 ```
+
+`--private` additionally gitignores `addons/gdcli/` so the bridge never reaches a shared
+repository; `--check` reports what would change without writing anything.
+
+Requirements: Godot 4.4+ (developed against 4.7.2), Linux/macOS/Windows, and Python 3 only
+if you want to run the end-to-end suite.
 
 ## Use
 

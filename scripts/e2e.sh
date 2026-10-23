@@ -8,6 +8,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-/tmp/gdcli-e2e}"
 GODOT="${GODOT:-godot}"
+# Extra flags for the GUI editor launch only, e.g. "--rendering-driver opengl3" on a GPU-less
+# CI box. Not applied to the headless run: --headless already forces the dummy renderer.
+GODOT_EXTRA_ARGS="${GODOT_EXTRA_ARGS:-}"
 BIN="$REPO/target/debug/gdcli"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -324,7 +327,7 @@ if [[ "${E2E_GUI:-0}" == "1" ]]; then
 	# Force X11: with WAYLAND_DISPLAY inherited the editor runs on the real session and the
 	# game it spawns (--display-driver wayland --wid ...) never initialises its scene tree.
 	env -u WAYLAND_DISPLAY xvfb-run -a -s "-screen 0 1600x1000x24" \
-		"$GODOT" --editor --display-driver x11 --path "$GW" res://main.tscn >"$GW/editor.log" 2>&1 &
+		"$GODOT" $GODOT_EXTRA_ARGS --editor --display-driver x11 --path "$GW" res://main.tscn >"$GW/editor.log" 2>&1 &
 	GUI_PID=$!
 	trap 'kill "$EDITOR_PID" "$GUI_PID" 2>/dev/null || true; pkill -f "$GW" 2>/dev/null || true' EXIT
 	for _ in $(seq 1 120); do
