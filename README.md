@@ -47,7 +47,7 @@ repository.
 
 Paste this into Claude Code, Codex, OpenCode or any agent with a shell:
 
-> Set up gdcli for me. Run `cargo install gdcli-cli`, then `gdcli plugin install --project <path to my Godot game>` (ask me for the path), then `npx skills add haytham818/gdcli@gdcli -g -y -a '*'` so you also get the gdcli skill. Finish by running `gdcli editor status`; if the editor is not running, tell me to start it and rerun.
+> Set up gdcli for me. Run `cargo install gdcli-cli`, then `gdcli plugin install --project <path to my Godot game>` (ask me for the path), then `npx skills add haytham818/gdcli@gdcli -g -y -a claude-code -a codex -a opencode -a cursor` so you also get the gdcli skill. Finish by running `gdcli editor status`; if the editor is not running, tell me to start it and rerun.
 
 The skill is what teaches an agent to reach for `gdcli` instead of editing `.tscn` files: it
 carries the command recipes, the exit-code table and the failure modes that matter. It lives in

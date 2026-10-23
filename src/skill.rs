@@ -11,10 +11,14 @@ use crate::output::Fmt;
 /// `owner/repo@skill`, as accepted by the skills CLI.
 pub const SKILL: &str = "haytham818/gdcli@gdcli";
 
-/// Builds the non-interactive install, safe to paste anywhere. The agent list is explicit:
-/// with `-y` and no `-a`, the skills CLI falls back to every agent it knows about.
+/// Builds the non-interactive install, safe to paste anywhere.
+///
+/// The agent list is explicit and bounded: with `-y` and no `-a` the skills CLI either guesses
+/// from what is installed or, when nothing matches, links the skill into every agent directory
+/// it knows about (dozens). Four mainstream agents is a reasonable default; anyone else adds
+/// another `-a <agent>`.
 pub fn default_command() -> String {
-    format!("npx --yes skills add {SKILL} -g -y -a '*'")
+    format!("npx --yes skills add {SKILL} -g -y -a claude-code -a codex -a opencode -a cursor")
 }
 
 /// Overrides the installer command, for offline machines and for tests.
@@ -136,7 +140,8 @@ mod tests {
         assert!(command.contains(SKILL), "{command}");
         assert!(command.contains("-g"), "{command}");
         assert!(command.contains("-y"), "{command}");
-        assert!(command.contains("-a '*'"), "{command}");
+        assert!(command.contains("-a claude-code"), "{command}");
+        assert!(!command.contains("-a '*'"), "{command}");
         assert_eq!(
             command_from(Some("sh /tmp/fake.sh".to_string())),
             "sh /tmp/fake.sh"

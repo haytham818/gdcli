@@ -75,10 +75,11 @@ editor keeps the old plugin until you restart it.
 `gdcli plugin install` offers to install it when it runs in a terminal; in scripts use
 
 ```sh
-npx skills add haytham818/gdcli@gdcli -g -y -a '*'
+npx skills add haytham818/gdcli@gdcli -g -y -a claude-code -a codex -a opencode -a cursor
 ```
 
-or pass `--with-skill` / `--no-skill` to `gdcli plugin install`. The skill is listed on
+or pass `--with-skill` / `--no-skill` to `gdcli plugin install`. The `-a` list is
+what the CLI installs for by default; add `-a <agent>` for anything else (Gemini CLI, Windsurf, ...). The skill is listed on
 [skills.sh](https://skills.sh/haytham818/gdcli/gdcli) and lives in the repository, so it
 travels with the CLI.
 
