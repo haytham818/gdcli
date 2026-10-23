@@ -69,6 +69,19 @@ playing      : false
 `gdcli plugin upgrade` rewrites the installed files after you upgrade the CLI; a running
 editor keeps the old plugin until you restart it.
 
+## The agent skill
+
+`gdcli` ships a companion skill for coding agents at [`skills/gdcli`](https://github.com/haytham818/gdcli/tree/main/skills/gdcli).
+`gdcli plugin install` offers to install it when it runs in a terminal; in scripts use
+
+```sh
+npx skills add haytham818/gdcli@gdcli -g -y -a '*'
+```
+
+or pass `--with-skill` / `--no-skill` to `gdcli plugin install`. The skill is listed on
+[skills.sh](https://skills.sh/haytham818/gdcli/gdcli) and lives in the repository, so it
+travels with the CLI.
+
 ## Requirements
 
 - Godot **4.4+** (developed against 4.7.2), any edition; the plugin is plain GDScript.

@@ -8,6 +8,7 @@ mod commands;
 mod error;
 mod install;
 mod output;
+mod skill;
 
 use std::path::{Path, PathBuf};
 
@@ -152,6 +153,12 @@ enum PluginCommand {
         /// Add addons/gdcli/ to the project's .gitignore
         #[arg(long)]
         private: bool,
+        /// Install the agent skill from skills.sh without asking
+        #[arg(long, conflicts_with = "no_skill")]
+        with_skill: bool,
+        /// Never offer the agent skill, even in a terminal
+        #[arg(long)]
+        no_skill: bool,
     },
     /// Rewrite the plugin files that differ from the embedded version
     Upgrade,
@@ -926,9 +933,16 @@ fn run() -> i32 {
 fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
     if let Command::Plugin { command } = &cli.command {
         let action = match command {
-            PluginCommand::Install { check, private } => commands::plugin::Action::Install {
+            PluginCommand::Install {
+                check,
+                private,
+                with_skill,
+                no_skill,
+            } => commands::plugin::Action::Install {
                 check: *check,
                 private: *private,
+                with_skill: *with_skill,
+                no_skill: *no_skill,
             },
             PluginCommand::Upgrade => commands::plugin::Action::Upgrade,
             PluginCommand::Status => commands::plugin::Action::Status,
@@ -1723,7 +1737,7 @@ mod tests {
         let cli =
             Cli::try_parse_from(["gdcli", "plugin", "install"]).expect("parse plugin install");
         let Command::Plugin {
-            command: PluginCommand::Install { check, private },
+            command: PluginCommand::Install { check, private, .. },
         } = cli.command
         else {
             panic!("expected plugin install");
@@ -1734,7 +1748,7 @@ mod tests {
         let cli = Cli::try_parse_from(["gdcli", "plugin", "install", "--check", "--private"])
             .expect("parse private install");
         let Command::Plugin {
-            command: PluginCommand::Install { check, private },
+            command: PluginCommand::Install { check, private, .. },
         } = cli.command
         else {
             panic!("expected plugin install");

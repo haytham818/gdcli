@@ -7,6 +7,7 @@
 Control a running Godot editor from the command line, just as you would by hand.
 
 **Documentation: <https://haytham818.github.io/gdcli/>**
+[![skills.sh](https://skills.sh/b/haytham818/gdcli)](https://skills.sh/haytham818/gdcli/gdcli)
 
 ## Install
 
@@ -41,6 +42,20 @@ repository.
 
 `--check` reports what would change without writing anything.
 
+
+## Use it from an agent
+
+Paste this into Claude Code, Codex, OpenCode or any agent with a shell:
+
+> Set up gdcli for me. Run `cargo install gdcli-cli`, then `gdcli plugin install --project <path to my Godot game>` (ask me for the path), then `npx skills add haytham818/gdcli@gdcli -g -y -a '*'` so you also get the gdcli skill. Finish by running `gdcli editor status`; if the editor is not running, tell me to start it and rerun.
+
+The skill is what teaches an agent to reach for `gdcli` instead of editing `.tscn` files: it
+carries the command recipes, the exit-code table and the failure modes that matter. It lives in
+[`skills/gdcli`](skills/gdcli) and is published through
+[skills.sh](https://skills.sh/haytham818/gdcli/gdcli).
+
+`gdcli plugin install` offers to install it for you in a terminal; `--with-skill` and
+`--no-skill` decide up front, and both are no-ops in scripts.
 
 ## Usage
 

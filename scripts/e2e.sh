@@ -250,6 +250,26 @@ grep -qx 'addons/gdcli/' "$PW/.gitignore" || fail ".gitignore missing addons/gdc
 "$BIN" plugin install --private --project "$PW" >/dev/null
 [[ "$(grep -c '^addons/gdcli/$' "$PW/.gitignore")" == "1" ]] || fail ".gitignore entry duplicated"
 
+step "agent skill offer"
+SP="$WORK/skillproj"
+rm -rf "$SP"; mkdir -p "$SP"
+cp "$REPO"/tests/fixture/project.godot "$SP"/
+SKILL_LOG="$WORK/skill-ran.log"
+printf '#!/bin/sh\necho "ran $*" >> "%s"\n' "$SKILL_LOG" > "$WORK/fake-skill.sh"
+chmod +x "$WORK/fake-skill.sh"
+
+GDCLI_SKILL_CMD="sh $WORK/fake-skill.sh" "$BIN" plugin install --check --project "$SP" >/dev/null 2>&1
+[[ ! -f "$SKILL_LOG" ]] || fail "--check installed the skill"
+
+GDCLI_SKILL_CMD="sh $WORK/fake-skill.sh" "$BIN" plugin install --with-skill --project "$SP" >/dev/null 2>&1
+[[ -f "$SKILL_LOG" ]] || fail "--with-skill did not run the installer"
+echo "    installer ran for --with-skill"
+
+rm -f "$SKILL_LOG"
+GDCLI_SKILL_CMD="sh $WORK/fake-skill.sh" "$BIN" plugin install --no-skill --project "$SP" >/dev/null 2>&1
+[[ ! -f "$SKILL_LOG" ]] || fail "--no-skill still ran the installer"
+echo "    installer skipped for --no-skill"
+
 step "input map"
 "$BIN" project input add-action jump --deadzone 0.2 --project "$WORK" | sed 's/^/    /'
 "$BIN" project input add-event jump --key Space --modifiers shift --project "$WORK" | sed 's/^/    /'

@@ -6,7 +6,12 @@ use crate::install;
 use crate::output::{self, Fmt};
 
 pub enum Action {
-    Install { check: bool, private: bool },
+    Install {
+        check: bool,
+        private: bool,
+        with_skill: bool,
+        no_skill: bool,
+    },
     Upgrade,
     Status,
 }
@@ -14,9 +19,17 @@ pub enum Action {
 pub fn run(project: Option<&Path>, action: Action, fmt: Fmt) -> Result<()> {
     let project = client::discover_project(project)?;
     match action {
-        Action::Install { check, private } => {
+        Action::Install {
+            check,
+            private,
+            with_skill,
+            no_skill,
+        } => {
             let report = install::install(&project, check, private)?;
             output::install_report(fmt, &report, check);
+            if !check {
+                crate::skill::offer(with_skill, no_skill, fmt);
+            }
             Ok(())
         }
         Action::Upgrade => {
