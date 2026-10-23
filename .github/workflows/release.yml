@@ -126,7 +126,12 @@ jobs:
           # Flat archive: the installers look for the binary at the root.
           tar -czf "dist/$name.tar.gz" -C "dist/$name" $(cd "dist/$name" && ls)
           rm -rf "dist/$name"
-          ( cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+          # macOS has shasum, not sha256sum; both print "<hash>  <file>".
+          if command -v sha256sum >/dev/null 2>&1; then
+            ( cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+          else
+            ( cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" )
+          fi
 
       - name: Package (zip)
         if: runner.os == 'Windows'
