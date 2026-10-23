@@ -117,7 +117,7 @@ pub fn absolute_output(out: &Path) -> Result<String> {
 
 /// `canonicalize` on Windows returns `\\?\D:\...` (and `\\?\UNC\...` for shares). Godot
 /// does not understand those prefixes, so hand the editor a plain path.
-fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+pub(crate) fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));

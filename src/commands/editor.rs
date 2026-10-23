@@ -319,9 +319,11 @@ mod tests {
         let out = root.join("nest/deeper/shot.png");
 
         let call = screenshot("2d", &out).unwrap();
-        let expected = fs::canonicalize(root.join("nest/deeper"))
-            .unwrap()
-            .join("shot.png");
+        let expected = crate::commands::without_verbatim_prefix(
+            fs::canonicalize(root.join("nest/deeper"))
+                .unwrap()
+                .join("shot.png"),
+        );
         assert_eq!(call.cmd, "editor.screenshot");
         assert_eq!(call.args["viewport"], "2d");
         assert_eq!(call.args["path"], expected.to_string_lossy().as_ref());
