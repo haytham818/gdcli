@@ -18,6 +18,8 @@ var _version := "unknown"
 
 const ENDPOINT_DIR := "res://.godot/gdcli"
 const ENDPOINT_PATH := "res://.godot/gdcli/endpoint.json"
+const SCREENSHOT_DIR := "res://.godot/gdcli/screenshots"
+const PALETTE_META := "gdcli_palette_keys"
 
 const Meta = preload("commands/meta.gd")
 const EditorCommands = preload("commands/editor.gd")
@@ -33,6 +35,14 @@ const FsCommands = preload("commands/fs.gd")
 const ScriptCommands = preload("commands/script.gd")
 const GameCommands = preload("commands/game.gd")
 const DebugCapture = preload("debug_capture.gd")
+
+# Command palette (M8). EditorCommandPalette is write-only, so this list is the
+# only source of truth for `editor.palette.list`; the callables are exactly what
+# the palette holds, so `palette.run` takes the same path as a human click.
+var _palette_entries: Array = []
+# Palette screenshots reuse editor.gd's deferred capture but belong to no client,
+# so they are advanced here once per frame instead of in a connection's slot.
+var _palette_captures: Array = []
 
 var _registry: Dictionary = {}
 var _server: TCPServer = null
@@ -71,10 +81,14 @@ func _enter_tree() -> void:
 	_start_server()
 	_write_endpoint()
 	set_process(true)
+	_build_palette_entries()
+	register_palette()
 
 
 func _exit_tree() -> void:
 	set_process(false)
+	_palette_captures.clear()
+	unregister_palette()
 	if debug_capture != null:
 		remove_debugger_plugin(debug_capture)
 		debug_capture = null
@@ -93,6 +107,7 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
+	_advance_palette_captures()
 	if _server == null:
 		return
 	while _server.is_connection_available():
@@ -170,6 +185,192 @@ func _write_endpoint() -> void:
 		"godot": String(Engine.get_version_info()["string"]),
 	}, "  "))
 	file.close()
+
+
+# --- command palette (M8) ----------------------------------------------------
+#
+# EditorCommandPalette only takes `add_command`/`remove_command`; there is no way
+# to read it back. The registry below is therefore the source of truth for
+# `editor.palette.list`, and the callables it holds are the ones a click runs.
+
+
+func _build_palette_entries() -> void:
+	_palette_entries = [
+		{
+			"name": "gdcli: Screenshot 2D view",
+			"key": "gdcli_screenshot_2d",
+			"callable": _palette_screenshot_2d,
+		},
+		{
+			"name": "gdcli: Screenshot whole editor",
+			"key": "gdcli_screenshot_whole",
+			"callable": _palette_screenshot_whole,
+		},
+		{
+			"name": "gdcli: Show bridge status",
+			"key": "gdcli_bridge_status",
+			"callable": _palette_bridge_status,
+		},
+	]
+
+
+# Returns the palette, or null on an engine/build without one. Startup must not
+# break on an older editor, so every palette call goes through this.
+func _command_palette() -> Variant:
+	if not EditorInterface.has_method("get_command_palette"):
+		return null
+	var palette: Variant = EditorInterface.get_command_palette()
+	if palette == null or not palette.has_method("add_command"):
+		return null
+	return palette
+
+
+# Public so a reload probe can call it twice. A key this plugin already owns is
+# removed before it is added again, so a plugin reload cannot duplicate an entry.
+# remove_command() logs an engine error for a key the palette does not hold, and
+# the palette has no getter, so the owned keys are remembered on the palette
+# object itself: it outlives a plugin (and a script) reload, whereas a static
+# variable does not.
+func register_palette() -> void:
+	var palette: Variant = _command_palette()
+	if palette == null:
+		return
+	var keys: Array = palette.get_meta(PALETTE_META, [])
+	var can_remove: bool = palette.has_method("remove_command")
+	for entry in _palette_entries:
+		var key := String(entry["key"])
+		if can_remove and keys.has(key):
+			palette.remove_command(key)
+		palette.add_command(String(entry["name"]), key, entry["callable"], "gdcli")
+		if not keys.has(key):
+			keys.append(key)
+	palette.set_meta(PALETTE_META, keys)
+
+
+func unregister_palette() -> void:
+	var palette: Variant = _command_palette()
+	if palette == null:
+		return
+	var keys: Array = palette.get_meta(PALETTE_META, [])
+	if palette.has_method("remove_command"):
+		for key in keys:
+			palette.remove_command(String(key))
+	palette.remove_meta(PALETTE_META)
+
+
+# Registration order; `editor.palette.list` reports exactly these names.
+func palette_names() -> Array:
+	var names: Array = []
+	for entry in _palette_entries:
+		names.append(String(entry["name"]))
+	return names
+
+
+# Calls the Callable the palette holds, so the effect is the one a human click
+# has. Screenshot entries return as soon as the capture is scheduled.
+# Returns false when no entry carries that name.
+func palette_run(name: String) -> bool:
+	for entry in _palette_entries:
+		if String(entry["name"]) == name:
+			var action: Callable = entry["callable"]
+			action.call()
+			return true
+	return false
+
+
+func palette_has(name: String) -> bool:
+	for entry in _palette_entries:
+		if String(entry["name"]) == name:
+			return true
+	return false
+
+
+func _palette_screenshot_2d() -> void:
+	_start_palette_screenshot("2d", "shot2d")
+
+
+func _palette_screenshot_whole() -> void:
+	_start_palette_screenshot("whole", "shotwhole")
+
+
+func _start_palette_screenshot(view: String, stem: String) -> void:
+	var target := _screenshot_target(stem)
+	if bool(target.get("headless", false)):
+		# No texture under a dummy renderer: say what to do about it instead of
+		# writing an empty file (PROTOCOL section 10).
+		_toast(EditorCommands.HEADLESS_HINT)
+		return
+	var needed := 1
+	if view != "whole":
+		# The 2D sub-viewport keeps a 2x2 placeholder until two frames rendered.
+		EditorInterface.set_main_screen_editor("2D")
+		needed = EditorCommands.SCREENSHOT_FRAMES
+	_palette_captures.append({
+		"kind": "screenshot",
+		"needed": needed,
+		"frames": 0,
+		"view": view,
+		"absolute": target["absolute"],
+		"reported": target["absolute"],
+	})
+
+
+# `res://.godot/gdcli/screenshots/<stem>-<unix_ms>.png`; the directory is created
+# by editor.gd's poll_screenshot when the file is written.
+func _screenshot_target(stem: String) -> Dictionary:
+	if DisplayServer.get_name() == "headless":
+		return {"headless": true}
+	var stamp := int(Time.get_unix_time_from_system() * 1000.0)
+	var absolute := ProjectSettings.globalize_path(SCREENSHOT_DIR).path_join(
+		"%s-%d.png" % [stem, stamp])
+	return {"headless": false, "absolute": absolute}
+
+
+func _advance_palette_captures() -> void:
+	if _palette_captures.is_empty():
+		return
+	var waiting: Array = []
+	for pending in _palette_captures:
+		pending["frames"] = int(pending["frames"]) + 1
+		var reply: Dictionary = EditorCommands.poll_screenshot(pending)
+		if reply.is_empty():
+			waiting.append(pending)
+			continue
+		_report_palette_capture(pending, reply)
+	_palette_captures = waiting
+
+
+func _report_palette_capture(pending: Dictionary, reply: Dictionary) -> void:
+	if bool(reply.get("ok", false)):
+		_toast(String(pending["absolute"]))
+		return
+	var error: Variant = reply.get("error", {})
+	var message := "screenshot failed"
+	var hint := ""
+	if typeof(error) == TYPE_DICTIONARY:
+		message = String(error.get("message", message))
+		hint = String(error.get("hint", ""))
+	if hint != "":
+		message = "%s - %s" % [message, hint]
+	_toast(message)
+
+
+func _palette_bridge_status() -> void:
+	var root := EditorInterface.get_edited_scene_root()
+	var scene := "(no scene)"
+	if root != null:
+		var path := ProjectSettings.localize_path(root.scene_file_path)
+		scene = path if path != "" else String(root.name)
+	var port: String = str(_port) if _port > 0 else "bridge off"
+	var state := "playing" if EditorInterface.is_playing_scene() else "stopped"
+	_toast("%s \u00b7 %s \u00b7 %s \u00b7 %s" % [port, _version, scene, state])
+
+
+func _toast(message: String) -> void:
+	var toaster: Variant = EditorInterface.get_editor_toaster()
+	if toaster == null:
+		return
+	toaster.push_toast(message, EditorToaster.SEVERITY_INFO, "")
 
 
 # --- socket loop -------------------------------------------------------------

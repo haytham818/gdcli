@@ -274,6 +274,23 @@ assert 'jump=' not in text and 'leap=' not in text, "an input action survived re
 print("    input map cleaned up")
 PY
 
+step "M8: command palette"
+"$BIN" editor palette list --project "$WORK" | sed 's/^/    /'
+PALETTE="$("$BIN" editor palette list --project "$WORK" --json)"
+python3 - "$PALETTE" <<'PY'
+import json, sys
+entries = json.loads(sys.argv[1])["entries"]
+assert len(entries) == 3, entries
+assert all(e.startswith("gdcli: ") for e in entries), entries
+print("    entries:", ", ".join(entries))
+PY
+"$BIN" editor palette run "gdcli: Show bridge status" --project "$WORK" | sed 's/^/    /'
+set +e
+"$BIN" editor palette run "gdcli: nope" --project "$WORK" >/dev/null 2>&1
+CODE=$?
+set -e
+[[ $CODE -eq 3 ]] || fail "running an unknown palette entry should exit 3, got $CODE"
+
 step "M3: ui state, play/stop, game read-only"
 "$BIN" editor select Inst --project "$WORK" | sed 's/^/    /'
 "$BIN" editor select Inst Btn --add --project "$WORK" | sed 's/^/    /'
@@ -328,6 +345,20 @@ for name in ("shot2d.png", "shot3d.png", "whole.png"):
     assert w > 100 and h > 100, (name, w, h)
     print("    %s %dx%d ok" % (name, w, h))
 PY
+	step "M8 GUI: palette screenshot"
+	"$BIN" editor palette run "gdcli: Screenshot 2D view" --project "$GW" | sed 's/^/    /'
+	sleep 2
+	SHOT="$(ls -1t "$GW"/.godot/gdcli/screenshots/shot2d-*.png 2>/dev/null | head -1)"
+	[[ -n "$SHOT" ]] || fail "palette screenshot produced no file"
+	python3 - "$SHOT" <<'PY'
+import struct, sys, pathlib
+data = pathlib.Path(sys.argv[1]).read_bytes()
+assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+w, h = struct.unpack(">II", data[16:24])
+assert w > 100 and h > 100, (w, h)
+print("    palette shot %dx%d ok" % (w, h))
+PY
+
 	step "M4 GUI: runtime bridge"
 	"$BIN" runtime install --project "$GW" | sed 's/^/    /'
 	"$BIN" runtime install --project "$GW" | sed 's/^/    /'

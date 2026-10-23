@@ -83,6 +83,19 @@ pub fn stop() -> Call {
     Call::write_no_undo("editor.stop", json!({}))
 }
 
+/// The palette entries gdcli registers in the editor's command palette.
+pub fn palette_list() -> Call {
+    Call::read("editor.palette.list", json!({}))
+}
+
+/// Invoke one palette entry by its exact name.
+///
+/// Fire-and-forget: the plugin schedules the action and returns before it
+/// finishes, so a screenshot written by the entry lands a few frames later.
+pub fn palette_run(name: &str) -> Call {
+    Call::write_no_undo("editor.palette.run", json!({ "name": name }))
+}
+
 fn clamp_count(count: i64) -> i64 {
     count.clamp(1, MAX_COUNT)
 }
@@ -273,6 +286,31 @@ mod tests {
         assert!(stop.mutating);
         assert!(!stop.undoable);
         assert_eq!(stop.args, json!({}));
+    }
+
+    #[test]
+    fn palette_list_is_read_only() {
+        let call = palette_list();
+        assert_eq!(call.cmd, "editor.palette.list");
+        assert!(!call.mutating);
+        assert_eq!(call.args, json!({}));
+        assert!(call.opts(true, true).is_none());
+    }
+
+    #[test]
+    fn palette_run_forwards_the_name_and_sends_no_undo() {
+        let name = "gdcli: Screenshot 2D view";
+        let call = palette_run(name);
+        assert_eq!(call.cmd, "editor.palette.run");
+        assert_eq!(call.args, json!({ "name": name }));
+        assert!(call.mutating);
+        assert!(!call.undoable);
+
+        let opts = call.opts(true, true).unwrap();
+        assert_eq!(
+            serde_json::to_value(opts).unwrap(),
+            serde_json::json!({ "dry_run": true })
+        );
     }
 
     #[test]

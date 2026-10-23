@@ -40,6 +40,10 @@ static func register(reg: Dictionary) -> void:
 		return _play(args, opts)
 	reg["editor.stop"] = func(_args: Dictionary, opts: Dictionary) -> Dictionary:
 		return _stop(opts)
+	reg["editor.palette.list"] = func(_args: Dictionary, opts: Dictionary) -> Dictionary:
+		return M.ok({"entries": opts["plugin"].palette_names()})
+	reg["editor.palette.run"] = func(args: Dictionary, opts: Dictionary) -> Dictionary:
+		return _palette_run(args, opts)
 
 
 static func _status() -> Dictionary:
@@ -539,3 +543,26 @@ static func _stop(opts: Dictionary) -> Dictionary:
 		return M.ok(data)
 	EditorInterface.stop_playing_scene()
 	return M.ok({"playing": EditorInterface.is_playing_scene()})
+
+
+# --- command palette (M8) ----------------------------------------------------
+
+# The palette has no read API, so the plugin's own registry answers. Invoking the
+# registered Callable is exactly what the palette does on a click; the screenshot
+# entries return once the capture is scheduled (it finishes two frames later).
+# `dry_run` still validates the name but does not run anything: the actions write
+# a file, switch the main screen and toast, so a dry run must leave them alone.
+static func _palette_run(args: Dictionary, opts: Dictionary) -> Dictionary:
+	var raw: Variant = args.get("name", null)
+	if typeof(raw) != TYPE_STRING:
+		return M.err("BAD_ARGS", "missing `name`", "run `gdcli editor palette list`")
+	var name := String(raw)
+	if not bool(opts["plugin"].palette_has(name)):
+		return M.err("NOT_FOUND", "no palette entry named '%s'" % name,
+			"run `gdcli editor palette list`")
+	if bool(opts.get("dry_run", false)):
+		var data := {"name": name}
+		data["planned"] = [{"op": "palette.run", "name": name}]
+		return M.ok(data)
+	opts["plugin"].palette_run(name)
+	return M.ok({"name": name})

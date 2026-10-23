@@ -36,6 +36,8 @@ pub fn render(fmt: Fmt, cmd: &str, args: &Value, data: &Value) -> Result<()> {
         "editor.undo" | "editor.redo" => render_history_action(cmd, data),
         "editor.history" => render_history(data),
         "editor.play" | "editor.stop" => render_playing(cmd, data),
+        "editor.palette.list" => print_lines(&palette_lines(data)),
+        "editor.palette.run" => render_palette_run(args, data),
         "editor.screenshot" | "game.screenshot" => render_screenshot(data),
         "project.plugins.list" => render_plugins(data),
         "project.plugins.enable" | "project.plugins.disable" => render_plugin_toggle(data),
@@ -450,6 +452,7 @@ fn print_quiet(cmd: &str, args: &Value, data: &Value) {
         "editor.screenshot" | "game.screenshot" => scalar(data, "path").into_iter().collect(),
         "editor.play" => play_quiet(data),
         "editor.stop" => scalar(data, "playing").into_iter().collect(),
+        "editor.palette.list" => palette_lines(data),
         "editor.toast" | "game.clear" => Vec::new(),
         "game.status" => scalar(data, "sessions").into_iter().collect(),
         "game.logs" => game_log_texts(data),
@@ -1071,6 +1074,39 @@ fn render_screenshot(data: &Value) {
     println!("{path} ({width}x{height})");
 }
 
+/// Palette entry names are long and self-describing, so one per line, no table.
+fn palette_lines(data: &Value) -> Vec<String> {
+    let Some(entries) = data.get("entries").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if entries.is_empty() {
+        return vec!["no palette entries".to_string()];
+    }
+    entries.iter().map(cell).collect()
+}
+
+/// `editor.palette.run`: the action is scheduled, not finished, and a
+/// screenshot entry writes under the project's ignored `.godot/` directory.
+fn render_palette_run(args: &Value, data: &Value) {
+    println!("{}", palette_run_line(args, data));
+}
+
+fn palette_run_line(args: &Value, data: &Value) -> String {
+    let name = scalar(data, "name")
+        .or_else(|| scalar(args, "name"))
+        .unwrap_or_default();
+    let verb = if data
+        .get("planned")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "would run"
+    } else {
+        "ran"
+    };
+    format!("{verb} {name} (screenshots land in .godot/gdcli/screenshots/)")
+}
+
 /// One line per log entry: `<session> <kind> | <text>`, in arrival order.
 fn game_log_lines(data: &Value) -> Vec<String> {
     let Some(lines) = data.get("lines").and_then(Value::as_array) else {
@@ -1654,6 +1690,60 @@ mod tests {
         assert_eq!(
             input_list_lines(&json!({"actions": []})),
             vec!["no input actions"]
+        );
+    }
+
+    #[test]
+    fn palette_list_prints_one_long_name_per_line() {
+        let data = json!({
+            "entries": [
+                "gdcli: Screenshot 2D view",
+                "gdcli: Screenshot whole editor",
+                "gdcli: Show bridge status",
+            ],
+        });
+        assert_eq!(
+            palette_lines(&data),
+            vec![
+                "gdcli: Screenshot 2D view",
+                "gdcli: Screenshot whole editor",
+                "gdcli: Show bridge status",
+            ]
+        );
+    }
+
+    #[test]
+    fn palette_list_reports_an_empty_palette() {
+        assert_eq!(
+            palette_lines(&json!({"entries": []})),
+            vec!["no palette entries"]
+        );
+        assert!(palette_lines(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn palette_run_names_the_entry_and_the_screenshot_directory() {
+        let args = json!({"name": "gdcli: Screenshot 2D view"});
+        let data = json!({"name": "gdcli: Screenshot 2D view"});
+        assert_eq!(
+            palette_run_line(&args, &data),
+            "ran gdcli: Screenshot 2D view (screenshots land in .godot/gdcli/screenshots/)"
+        );
+    }
+
+    #[test]
+    fn palette_run_falls_back_to_the_request_name_and_marks_a_dry_run() {
+        let args = json!({"name": "gdcli: Show bridge status"});
+        assert_eq!(
+            palette_run_line(&args, &json!({})),
+            "ran gdcli: Show bridge status (screenshots land in .godot/gdcli/screenshots/)"
+        );
+        assert_eq!(
+            palette_run_line(
+                &args,
+                &json!({"name": "gdcli: Show bridge status", "planned": true})
+            ),
+            "would run gdcli: Show bridge status (screenshots land in .godot/gdcli/screenshots/)"
         );
     }
 }

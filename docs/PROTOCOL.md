@@ -602,3 +602,40 @@ CLI:
 ```
 gdcli game logs [--limit N] [--clear] [--kind output|error|warning]
 ```
+
+## 15. Commands (M8, plugin 0.9.0)
+
+The editor's command palette (`EditorCommandPalette`) can only be written to:
+`add_command(name, key_name, callable, shortcut_text)` and `remove_command(key_name)` — there is
+no way to list or invoke other people's entries. So gdcli registers a few of its own and exposes
+exactly those.
+
+### editor (additional)
+
+| cmd | args | data |
+| --- | --- | --- |
+| `editor.palette.list` | — | `{"entries":[str]}` |
+| `editor.palette.run` | `{"name"}` | `{"name"}` |
+
+Entries are registered in `_enter_tree` and removed in `_exit_tree`; both operate on a key list
+the plugin stores as palette metadata, because `remove_command` on a key that was never added
+logs an engine error and the palette cannot be enumerated. Everything is prefixed `gdcli: ` so
+the entries group together in the palette search:
+
+| entry | effect |
+| --- | --- |
+| `gdcli: Screenshot 2D view` | capture the 2D viewport, write `.godot/gdcli/screenshots/shot2d-<ms>.png`, toast the path |
+| `gdcli: Screenshot whole editor` | same for the whole window, `.godot/gdcli/screenshots/shotwhole-<ms>.png` |
+| `gdcli: Show bridge status` | toast `port · plugin version · edited scene · playing/stopped` |
+
+`palette.run` invokes the same `Callable` a human click would, and returns once the action is
+**scheduled** — the screenshot actions finish two frames later, so a client checks the file
+after a short wait. Unknown name → `NOT_FOUND` with a `palette list` hint. `.godot/` is already
+ignored by Godot's own `.gitignore`, so screenshots never reach the repository.
+
+CLI:
+
+```
+gdcli editor palette list
+gdcli editor palette run <name>
+```

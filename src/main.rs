@@ -239,6 +239,22 @@ enum EditorCommand {
     },
     /// Stop the running game
     Stop,
+    /// List and run gdcli's entries in the editor's command palette
+    Palette {
+        #[command(subcommand)]
+        command: PaletteCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PaletteCommand {
+    /// List the palette entries this plugin registers
+    List,
+    /// Run a palette entry by name
+    Run {
+        /// Entry name exactly as `palette list` prints it
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -963,6 +979,13 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                     execute(&project, call, format, opts)
                 }
             }
+            EditorCommand::Palette { command } => {
+                let call = match command {
+                    PaletteCommand::List => commands::editor::palette_list(),
+                    PaletteCommand::Run { name } => commands::editor::palette_run(name),
+                };
+                execute(&project, call, format, opts)
+            }
             _ => {
                 let call = match command {
                     EditorCommand::Status => commands::editor::status(),
@@ -980,6 +1003,7 @@ fn dispatch(cli: &Cli, format: Fmt, opts: Opts) -> Result<()> {
                     }
                     EditorCommand::Play { .. } => unreachable!("play is handled above"),
                     EditorCommand::Stop => commands::editor::stop(),
+                    EditorCommand::Palette { .. } => unreachable!("palette is handled above"),
                 };
                 execute(&project, call, format, opts)
             }
@@ -1411,6 +1435,42 @@ mod tests {
         assert_eq!(mode.as_str(), "scene");
         assert_eq!(scene.as_deref(), Some("res://main.tscn"));
         assert!(wait);
+    }
+
+    #[test]
+    fn editor_palette_list_and_run_parse_the_name_verbatim() {
+        let cli = Cli::try_parse_from(["gdcli", "editor", "palette", "list"])
+            .expect("parse palette list");
+        assert!(matches!(
+            cli.command,
+            Command::Editor {
+                command: EditorCommand::Palette {
+                    command: PaletteCommand::List
+                }
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "gdcli",
+            "editor",
+            "palette",
+            "run",
+            "gdcli: Screenshot 2D view",
+        ])
+        .expect("parse palette run");
+        let Command::Editor {
+            command:
+                EditorCommand::Palette {
+                    command: PaletteCommand::Run { name },
+                },
+        } = cli.command
+        else {
+            panic!("expected editor palette run");
+        };
+        assert_eq!(name, "gdcli: Screenshot 2D view");
+
+        assert!(Cli::try_parse_from(["gdcli", "editor", "palette", "run"]).is_err());
+        assert!(Cli::try_parse_from(["gdcli", "editor", "palette", "bogus"]).is_err());
     }
 
     #[test]

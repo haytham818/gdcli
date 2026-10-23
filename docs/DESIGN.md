@@ -75,8 +75,9 @@ Not possible, and therefore not exposed:
    unless a runtime autoload forwards it. Measured with `_capture` instrumented.
 7. **Switching built-in bottom panels.** Only panels owned by the plugin are addressable via
    `EditorPlugin`; the rest would need UI-tree spelunking that breaks across versions.
-8. **Command palette listing/execution.** `EditorCommandPalette` exposes only
-   `add_command`/`remove_command`; the plugin registers into it instead.
+8. **Command palette listing/execution of *other* entries.** `EditorCommandPalette` exposes only
+   `add_command`/`remove_command`, so the plugin registers its own entries (M8) and can list
+   only those.
 
 Side effects to document for users: saving through the engine rewrites the scene header
 (adds `unique_id`, reorders uids), so diffs are noisy; the plugin's undo entries appear in
@@ -97,6 +98,9 @@ the user's history as `gdcli: <cmd>`.
   returns `NO_API`, `xvfb-run -a -s "-screen 0 1600x1000x24" godot --editor ...` produces
   real 1844x1189 sub-viewport and 2560x1398 whole-window PNGs. Game *output* is not
   observable on 4.7 (see below).
+* **M8** (shipped, plugin 0.9.0) — three `gdcli:` entries in the editor command palette so a
+  human can trigger the same actions the CLI drives, plus `editor palette list/run` for agents
+  and tests. The palette is write-only, so only gdcli's own entries are listed.
 * **M7** (shipped, plugin 0.8.0) — `game logs` captures the game's own `print`/`printerr`/
   `push_error`/`push_warning` stream through a `Logger` installed by the runtime autoload,
   since 4.7's debugger carries none of it. `Logger` + `OS.add_logger` is the mechanism;
