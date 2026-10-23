@@ -38,3 +38,9 @@
 .md-typeset .grid.cards > ul > li {
   border-radius: 0.5rem;
 }
+
+/* The README banner sits at the top of the home page. */
+.md-typeset img.banner {
+  border-radius: 0.6rem;
+  box-shadow: var(--md-shadow-z1);
+}

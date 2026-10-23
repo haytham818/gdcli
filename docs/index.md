@@ -1,11 +1,15 @@
 ---
 hide:
   - navigation
+  - toc
 ---
 
 # gdcli
 
-Drive a **running Godot editor** from the command line, just as you would by hand.
+![gdcli — control a running Godot editor from the command line](assets/banner.png){: .banner }
+
+gdcli drives a **running Godot editor** through its own APIs: nothing sits in the model's prompt,
+nothing is written behind the engine's back.
 
 ```sh
 gdcli scene tree --depth 2

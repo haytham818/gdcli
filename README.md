@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/haytham818/gdcli/main/docs/assets/logo.svg" width="96" alt="gdcli">
+  <img src="https://raw.githubusercontent.com/haytham818/gdcli/main/docs/assets/banner.png" alt="gdcli — control a running Godot editor from the command line">
 </p>
 
 # gdcli
