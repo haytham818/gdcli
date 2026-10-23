@@ -1,6 +1,6 @@
 # gdcli
 
-English · [简体中文](README.zh-CN.md)
+English | [中文](README.zh-CN.md)
 
 Control a running Godot editor from the command line, just as you would by hand.
 
@@ -33,7 +33,7 @@ gdcli editor status
 ```
 
 `--private` additionally gitignores `addons/gdcli/` so the bridge never reaches a shared
-repository 
+repository.
 
 `--check` reports what would change without writing anything.
 
@@ -49,9 +49,9 @@ gdcli prop set Hero texture 'res://art/hero.png' --as ref
 gdcli scene save
 ```
 
-Every mutation is one undoable step named `gdcli: <cmd>` 
+Every mutation is one undoable step named `gdcli: <cmd>`
 
-`--dry-run` returns the plan without touching anything. 
+`--dry-run` returns the plan without touching anything.
 
 `gdcli batch` takes NDJSON on stdin when an agent needs several operations in one connection.
 
