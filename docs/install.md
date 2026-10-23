@@ -33,7 +33,7 @@ The installers verify the download against the release's `SHA256SUMS` and accept
 
 | Variable | Meaning |
 | --- | --- |
-| `GDCLI_VERSION` | pin a release, e.g. `0.9.1` or `v0.9.1` |
+| `GDCLI_VERSION` | pin a release, e.g. `0.10.0` or `v0.10.0` |
 | `GDCLI_INSTALL_DIR` | where the binary goes; default `~/.local/bin` on unix, `%LOCALAPPDATA%\gdcli\bin` on Windows |
 | `GDCLI_BASE_URL` | mirror or self-hosted release directory (`install.sh` only) |
 

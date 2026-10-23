@@ -17,7 +17,7 @@ The plugin writes an endpoint file when it comes up:
 ```json
 {
   "protocol": 1,
-  "plugin_version": "0.9.1",
+  "plugin_version": "0.10.0",
   "port": 41234,
   "token": "9f2c...64 hex chars",
   "pid": 745244,
@@ -57,7 +57,7 @@ reply when the token is wrong.
 ```json
 {"ok": true, "data": {
   "protocol": 1,
-  "plugin_version": "0.9.1",
+  "plugin_version": "0.10.0",
   "godot": "4.7.2-stable",
   "project": "/abs/path",
   "capabilities": ["scene.open", "node.add", "..."]
