@@ -12,8 +12,11 @@ engine, edits land in your undo history, and nothing is written that Godot canno
 Three ways, all producing the same single binary:
 
 ```sh
-# 1. from source
-cargo install --path .        # or: cargo install --git https://github.com/haytham818/gdcli
+# 1. from crates.io (installs the `gdcli` binary)
+cargo install gdcli-cli
+
+# ...or straight from the repository
+cargo install --git https://github.com/haytham818/gdcli
 
 # 2. prebuilt binary (linux/macos)
 curl -fsSL https://github.com/haytham818/gdcli/releases/latest/download/install.sh | sh
